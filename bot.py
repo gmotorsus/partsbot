@@ -11,6 +11,7 @@ logging.basicConfig(level=logging.INFO)
 
 # ===== НАСТРОЙКИ =====
 SPREADSHEET_ID = "1qwwCLpmu-FYMDAStR4qKWSSbpFBb-mG-kbNrcdKrSS8"
+BUDGET_SPREADSHEET_ID = "1GwxtdYFLL9965adWGw6pEK22lgm8UT112TlxR4ajacc"
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 REMINDER_TEXT = "⚠️ Не забудь снять/архивировать листинг на eBay и Facebook!"
@@ -36,6 +37,51 @@ def get_expenses_sheet():
     """Expenses — расходы: Date | Expense | Amount | Added by"""
     client = get_client()
     return client.open_by_key(SPREADSHEET_ID).worksheet("Expenses")
+
+
+def find_budget_vehicle_sheet(query):
+    """
+    Ищет в таблице 'Разбор бюджет' лист, название которого содержит query.
+    Возвращает worksheet или None.
+    """
+    client = get_client()
+    spreadsheet = client.open_by_key(BUDGET_SPREADSHEET_ID)
+    query_lower = query.lower()
+    for ws in spreadsheet.worksheets():
+        if query_lower in ws.title.lower():
+            return ws
+    return None
+
+
+def get_budget_vehicle_costs(query):
+    """
+    Возвращает (purchase_price, other_expenses, sold_total) из листа машины
+    в таблице 'Разбор бюджет', или (0.0, 0.0, 0.0) если лист не найден / ошибка.
+    Структура листа: строка 3, колонка A = Проданно на сумму, B = Цена покупки,
+    D = Прочие расходы.
+    """
+    try:
+        ws = find_budget_vehicle_sheet(query)
+        if ws is None:
+            return 0.0, 0.0, 0.0
+
+        row3 = ws.row_values(3)
+
+        def to_float(idx):
+            try:
+                val = row3[idx].replace(",", ".").replace(" ", "")
+                return float(val) if val else 0.0
+            except (IndexError, ValueError):
+                return 0.0
+
+        sold_total = to_float(0)     # колонка A
+        purchase_price = to_float(1)  # колонка B
+        other_expenses = to_float(3)  # колонка D
+
+        return purchase_price, other_expenses, sold_total
+    except Exception as e:
+        logging.error(f"Ошибка чтения 'Разбор бюджет' для '{query}': {e}")
+        return 0.0, 0.0, 0.0
 
 
 # ===== КОМАНДЫ: ПРОДАЖИ =====
@@ -400,20 +446,25 @@ async def vehiclestats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except (IndexError, ValueError):
             continue
 
-    # Считаем расходы, связанные с этой машиной (по совпадению названия в Expenses)
-    vehicle_expenses = 0.0
+    # Расходы из таблицы "Разбор бюджет" (цена покупки + прочие расходы)
+    budget_purchase, budget_other, budget_sold = get_budget_vehicle_costs(query)
+    budget_expenses = budget_purchase + budget_other
+
+    # Дополнительные расходы, записанные через /expense в боте
+    bot_expenses = 0.0
     try:
         exp_sheet = get_expenses_sheet()
         exp_rows = exp_sheet.get_all_values()[1:]
         for r in exp_rows:
             if len(r) > 1 and query in r[1].lower():
                 try:
-                    vehicle_expenses += float(r[2])
+                    bot_expenses += float(r[2])
                 except (IndexError, ValueError):
                     continue
     except Exception as e:
         logging.error(f"Ошибка чтения Expenses для vehiclestats: {e}")
 
+    vehicle_expenses = budget_expenses + bot_expenses
     net_profit = total_sum - vehicle_expenses
 
     lines = [f"🚗 Статистика по машине: {query}\n", f"Деталей продано: {len(matches)}\n"]
@@ -423,8 +474,13 @@ async def vehiclestats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         price = r[3] if len(r) > 3 else "?"
         lines.append(f"• {date_s} — {part} — {price}")
 
-    lines.append(f"\n💰 Общая выручка: {total_sum:.2f}")
-    lines.append(f"💸 Расходы по машине: {vehicle_expenses:.2f}")
+    lines.append(f"\n💰 Общая выручка (бот): {total_sum:.2f}")
+    if budget_purchase or budget_other:
+        lines.append(f"🚙 Цена покупки: {budget_purchase:.2f}")
+        lines.append(f"🔧 Прочие расходы: {budget_other:.2f}")
+    if bot_expenses:
+        lines.append(f"💸 Доп. расходы (/expense): {bot_expenses:.2f}")
+    lines.append(f"💸 Всего расходов: {vehicle_expenses:.2f}")
     lines.append(f"📊 Чистая прибыль: {net_profit:.2f}")
 
     if vehicle_expenses > 0:
