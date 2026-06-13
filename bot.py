@@ -436,10 +436,6 @@ async def vehiclestats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     matches = [r for r in rows if len(r) > 1 and query in r[1].lower()]
 
-    if not matches:
-        await update.message.reply_text(f"Нет записей по машине: {query}")
-        return
-
     total_sum = 0.0
     for r in matches:
         try:
@@ -466,9 +462,14 @@ async def vehiclestats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"Ошибка чтения Expenses для vehiclestats: {e}")
 
     vehicle_expenses = budget_expenses + bot_expenses
+
+    if not matches and not budget_purchase and not budget_other and not bot_expenses:
+        await update.message.reply_text(f"Нет записей по машине: {query}")
+        return
+
     net_profit = total_sum - vehicle_expenses
 
-    lines = [f"🚗 Статистика по машине: {query}\n", f"Деталей продано: {len(matches)}\n"]
+    lines = [f"🚗 Статистика по машине: {query}\n", f"Деталей продано (бот): {len(matches)}\n"]
     for r in matches[-15:]:
         date_s = r[0] if len(r) > 0 else "?"
         part = r[2] if len(r) > 2 else "?"
@@ -476,6 +477,8 @@ async def vehiclestats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"• {date_s} — {part} — {price}")
 
     lines.append(f"\n💰 Общая выручка (бот): {total_sum:.2f}")
+    if budget_sold:
+        lines.append(f"📋 Продано по таблице (Разбор бюджет): {budget_sold:.2f}")
     if budget_purchase or budget_other:
         lines.append(f"🚙 Цена покупки: {budget_purchase:.2f}")
         lines.append(f"🔧 Прочие расходы: {budget_other:.2f}")
