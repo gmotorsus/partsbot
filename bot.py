@@ -5,7 +5,7 @@ from datetime import datetime, date
 import gspread
 from google.oauth2.service_account import Credentials
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
 logging.basicConfig(level=logging.INFO)
 
@@ -33,7 +33,14 @@ async def sold(update: Update, context: ContextTypes.DEFAULT_TYPE):
     /sold Название_детали Цена
     Можно отправить вместе с фото (фото как подпись к команде).
     """
-    if len(context.args) < 2:
+    # Берём текст из обычного сообщения или из подписи к фото
+    raw_text = update.message.text or update.message.caption or ""
+    # Убираем саму команду /sold (и возможный @username бота после неё)
+    parts = raw_text.split()
+    if parts and parts[0].startswith("/sold"):
+        parts = parts[1:]
+
+    if len(parts) < 2:
         await update.message.reply_text(
             "Используй так:\n/sold Название_детали Цена\n\nПример:\n/sold Бампер_GL450 5000\n\n"
             "Можно прикрепить фото детали к этому сообщению."
@@ -41,12 +48,12 @@ async def sold(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        price = float(context.args[-1])
+        price = float(parts[-1])
     except ValueError:
         await update.message.reply_text("Последним должна быть цена (число). Пример: /sold Бампер_GL450 5000")
         return
 
-    part_name = " ".join(context.args[:-1])
+    part_name = " ".join(parts[:-1])
     seller = update.message.from_user.first_name
     now = datetime.now().strftime("%d.%m.%Y %H:%M")
 
@@ -181,6 +188,10 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("sold", sold))
+    app.add_handler(MessageHandler(
+        filters.PHOTO & filters.CaptionRegex(r"^/sold"),
+        sold,
+    ))
     app.add_handler(CommandHandler("total", total))
     app.add_handler(CommandHandler("today", today))
     app.add_handler(CommandHandler("list", list_sales))
