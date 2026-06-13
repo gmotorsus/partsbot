@@ -535,7 +535,9 @@ async def groupid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"ID этого чата: {chat_id}")
 
 
-# ===== ПОМОЩЬ =====async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ===== ПОМОЩЬ =====
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 Команды бота:\n\n"
         "Продажи:\n"
