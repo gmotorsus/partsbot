@@ -400,6 +400,22 @@ async def vehiclestats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except (IndexError, ValueError):
             continue
 
+    # Считаем расходы, связанные с этой машиной (по совпадению названия в Expenses)
+    vehicle_expenses = 0.0
+    try:
+        exp_sheet = get_expenses_sheet()
+        exp_rows = exp_sheet.get_all_values()[1:]
+        for r in exp_rows:
+            if len(r) > 1 and query in r[1].lower():
+                try:
+                    vehicle_expenses += float(r[2])
+                except (IndexError, ValueError):
+                    continue
+    except Exception as e:
+        logging.error(f"Ошибка чтения Expenses для vehiclestats: {e}")
+
+    net_profit = total_sum - vehicle_expenses
+
     lines = [f"🚗 Статистика по машине: {query}\n", f"Деталей продано: {len(matches)}\n"]
     for r in matches[-15:]:
         date_s = r[0] if len(r) > 0 else "?"
@@ -408,6 +424,21 @@ async def vehiclestats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"• {date_s} — {part} — {price}")
 
     lines.append(f"\n💰 Общая выручка: {total_sum:.2f}")
+    lines.append(f"💸 Расходы по машине: {vehicle_expenses:.2f}")
+    lines.append(f"📊 Чистая прибыль: {net_profit:.2f}")
+
+    if vehicle_expenses > 0:
+        roi = (net_profit / vehicle_expenses) * 100
+        lines.append(f"📈 ROI: {roi:.1f}%")
+    else:
+        lines.append("📈 ROI: — (расходы не записаны)")
+
+    if total_sum > 0:
+        margin = (net_profit / total_sum) * 100
+        lines.append(f"📐 Маржа прибыли: {margin:.1f}%")
+    else:
+        lines.append("📐 Маржа прибыли: —")
+
     await update.message.reply_text("\n".join(lines))
 
 
