@@ -591,6 +591,14 @@ async def weekly_report(context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"Не удалось отправить еженедельный отчёт: {e}")
 
 
+# ===== СЛУЖЕБНОЕ =====
+
+async def groupid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/groupid — показывает ID текущего чата (для настройки REPORT_CHAT_ID)"""
+    chat_id = update.effective_chat.id
+    await update.message.reply_text(f"ID этого чата: {chat_id}")
+
+
 # ===== ПОМОЩЬ =====
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -651,6 +659,9 @@ def main():
     # Финансы
     app.add_handler(CommandHandler("expense", expense))
     app.add_handler(CommandHandler("profit", profit))
+
+    # Служебное
+    app.add_handler(CommandHandler("groupid", groupid))
 
     # Помощь
     app.add_handler(CommandHandler("help", help_command))
