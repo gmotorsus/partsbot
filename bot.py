@@ -42,31 +42,52 @@ def get_expenses_sheet():
 
 async def sold(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /sold Машина Деталь Цена
-    Например: /sold GL450 Бампер передний 5000
-    Можно отправить вместе с фото (фото как подпись к команде).
+    /sold
+    Машина
+    Деталь
+    Цена
+
+    Каждая часть на новой строке.
+    Например:
+    /sold
+    Mercedes GL450
+    Бампер передний
+    600
     """
     raw_text = update.message.text or update.message.caption or ""
-    parts = raw_text.split()
-    if parts and parts[0].startswith("/sold"):
-        parts = parts[1:]
+    lines_in = [l.strip() for l in raw_text.split("\n")]
 
-    if len(parts) < 3:
-        await update.message.reply_text(
-            "Используй так:\n/sold Машина Деталь Цена\n\nПример:\n/sold GL450 Бампер передний 5000\n\n"
-            "Первое слово — машина, последнее — цена, всё остальное — название детали.\n"
-            "Можно прикрепить фото детали к этому сообщению."
-        )
+    # Первая строка — это сама команда /sold (может быть с текстом после неё, игнорируем)
+    lines_in = lines_in[1:]
+    # Убираем пустые строки
+    lines_in = [l for l in lines_in if l]
+
+    USAGE = (
+        "Используй так (каждая часть на новой строке):\n"
+        "/sold\n"
+        "Машина\n"
+        "Деталь\n"
+        "Цена\n\n"
+        "Пример:\n"
+        "/sold\n"
+        "Mercedes GL450\n"
+        "Бампер передний\n"
+        "600\n\n"
+        "Можно прикрепить фото детали к этому сообщению."
+    )
+
+    if len(lines_in) < 3:
+        await update.message.reply_text(USAGE)
         return
 
     try:
-        price = float(parts[-1])
+        price = float(lines_in[-1].replace(",", "."))
     except ValueError:
-        await update.message.reply_text("Последним должна быть цена (число). Пример: /sold GL450 Бампер передний 5000")
+        await update.message.reply_text(f"Последняя строка должна быть ценой (числом).\n\n{USAGE}")
         return
 
-    vehicle = parts[0]
-    part_name = " ".join(parts[1:-1])
+    vehicle = lines_in[0]
+    part_name = " ".join(lines_in[1:-1])
     seller = update.message.from_user.first_name
     now = datetime.now().strftime("%d.%m.%Y %H:%M")
 
@@ -541,7 +562,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 Команды бота:\n\n"
         "Продажи:\n"
-        "/sold Машина Деталь Цена — отметить продажу (можно с фото)\n"
+        "/sold (каждая часть с новой строки: Машина / Деталь / Цена) — отметить продажу\n"
         "/cancel — отменить последнюю продажу\n\n"
         "Статистика:\n"
         "/total — общая сумма всех продаж\n"
