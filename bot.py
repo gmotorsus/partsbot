@@ -27,7 +27,7 @@ def get_client():
 
 
 def get_sales_sheet():
-    """Лист1 — продажи: Дата | Деталь | Цена | Продавец"""
+    """Лист1 — продажи: Дата | Машина | Деталь | Цена | Продавец"""
     client = get_client()
     return client.open_by_key(SPREADSHEET_ID).sheet1
 
@@ -38,17 +38,12 @@ def get_expenses_sheet():
     return client.open_by_key(SPREADSHEET_ID).worksheet("Expenses")
 
 
-def get_byvehicle_sheet():
-    """ByVehicle — продажи по машинам: Date | Vehicle | Part | Price | Seller"""
-    client = get_client()
-    return client.open_by_key(SPREADSHEET_ID).worksheet("ByVehicle")
-
-
 # ===== КОМАНДЫ: ПРОДАЖИ =====
 
 async def sold(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /sold Название_детали Цена
+    /sold Машина Деталь Цена
+    Например: /sold GL450 Бампер передний 5000
     Можно отправить вместе с фото (фото как подпись к команде).
     """
     raw_text = update.message.text or update.message.caption or ""
@@ -56,9 +51,10 @@ async def sold(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if parts and parts[0].startswith("/sold"):
         parts = parts[1:]
 
-    if len(parts) < 2:
+    if len(parts) < 3:
         await update.message.reply_text(
-            "Используй так:\n/sold Название_детали Цена\n\nПример:\n/sold Бампер_GL450 5000\n\n"
+            "Используй так:\n/sold Машина Деталь Цена\n\nПример:\n/sold GL450 Бампер передний 5000\n\n"
+            "Первое слово — машина, последнее — цена, всё остальное — название детали.\n"
             "Можно прикрепить фото детали к этому сообщению."
         )
         return
@@ -66,22 +62,24 @@ async def sold(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         price = float(parts[-1])
     except ValueError:
-        await update.message.reply_text("Последним должна быть цена (число). Пример: /sold Бампер_GL450 5000")
+        await update.message.reply_text("Последним должна быть цена (число). Пример: /sold GL450 Бампер передний 5000")
         return
 
-    part_name = " ".join(parts[:-1])
+    vehicle = parts[0]
+    part_name = " ".join(parts[1:-1])
     seller = update.message.from_user.first_name
     now = datetime.now().strftime("%d.%m.%Y %H:%M")
 
     try:
         sheet = get_sales_sheet()
-        sheet.append_row([now, part_name, price, seller])
+        sheet.append_row([now, vehicle, part_name, price, seller])
     except Exception as e:
         logging.error(f"Ошибка записи в таблицу: {e}")
         await update.message.reply_text("⚠️ Не получилось записать в таблицу, но сообщение в группе оставлено.")
 
     text = (
         f"✅ Продано: {part_name}\n"
+        f"Машина: {vehicle}\n"
         f"Цена: {price:.2f}\n"
         f"Продал: {seller}\n"
         f"Дата: {now}\n\n"
@@ -132,13 +130,14 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     date_s = last_row[0] if len(last_row) > 0 else "?"
-    part = last_row[1] if len(last_row) > 1 else "?"
-    price = last_row[2] if len(last_row) > 2 else "?"
-    seller = last_row[3] if len(last_row) > 3 else "?"
+    vehicle = last_row[1] if len(last_row) > 1 else "?"
+    part = last_row[2] if len(last_row) > 2 else "?"
+    price = last_row[3] if len(last_row) > 3 else "?"
+    seller = last_row[4] if len(last_row) > 4 else "?"
 
     await update.message.reply_text(
         f"❌ Отменена продажа:\n"
-        f"• {part} — {price} ({seller})\n"
+        f"• {part} ({vehicle}) — {price} ({seller})\n"
         f"Дата: {date_s}"
     )
 
@@ -162,7 +161,7 @@ async def total(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_sum = 0.0
     for row in rows:
         try:
-            total_sum += float(row[2])
+            total_sum += float(row[3])
         except (IndexError, ValueError):
             continue
 
@@ -193,13 +192,14 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = [f"📅 Продажи за сегодня ({len(today_rows)} шт.):\n"]
     for r in today_rows:
         try:
-            price = float(r[2])
+            price = float(r[3])
         except (IndexError, ValueError):
             price = 0.0
         total_sum += price
-        part = r[1] if len(r) > 1 else "?"
-        seller = r[3] if len(r) > 3 else "?"
-        lines.append(f"• {part} — {price:.2f} ({seller})")
+        vehicle = r[1] if len(r) > 1 else "?"
+        part = r[2] if len(r) > 2 else "?"
+        seller = r[4] if len(r) > 4 else "?"
+        lines.append(f"• {part} ({vehicle}) — {price:.2f} ({seller})")
 
     lines.append(f"\n💰 Итого за сегодня: {total_sum:.2f}")
     await update.message.reply_text("\n".join(lines))
@@ -233,7 +233,7 @@ async def month(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_sum = 0.0
     for r in month_rows:
         try:
-            total_sum += float(r[2])
+            total_sum += float(r[3])
         except (IndexError, ValueError):
             continue
 
@@ -263,10 +263,11 @@ async def list_sales(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = ["📋 Последние продажи:\n"]
     for r in last_rows:
         date_s = r[0] if len(r) > 0 else "?"
-        part = r[1] if len(r) > 1 else "?"
-        price = r[2] if len(r) > 2 else "?"
-        seller = r[3] if len(r) > 3 else "?"
-        lines.append(f"• {date_s} — {part} — {price} ({seller})")
+        vehicle = r[1] if len(r) > 1 else "?"
+        part = r[2] if len(r) > 2 else "?"
+        price = r[3] if len(r) > 3 else "?"
+        seller = r[4] if len(r) > 4 else "?"
+        lines.append(f"• {date_s} — {part} ({vehicle}) — {price} ({seller})")
 
     await update.message.reply_text("\n".join(lines))
 
@@ -287,7 +288,10 @@ async def find(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Не получилось прочитать таблицу.")
         return
 
-    matches = [r for r in rows if len(r) > 1 and query in r[1].lower()]
+    matches = [
+        r for r in rows
+        if (len(r) > 2 and (query in r[2].lower() or query in r[1].lower()))
+    ]
 
     if not matches:
         await update.message.reply_text(f"Ничего не найдено по запросу: {query}")
@@ -296,10 +300,11 @@ async def find(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = [f"🔍 Найдено ({len(matches)}):\n"]
     for r in matches[-15:]:
         date_s = r[0] if len(r) > 0 else "?"
-        part = r[1] if len(r) > 1 else "?"
-        price = r[2] if len(r) > 2 else "?"
-        seller = r[3] if len(r) > 3 else "?"
-        lines.append(f"• {date_s} — {part} — {price} ({seller})")
+        vehicle = r[1] if len(r) > 1 else "?"
+        part = r[2] if len(r) > 2 else "?"
+        price = r[3] if len(r) > 3 else "?"
+        seller = r[4] if len(r) > 4 else "?"
+        lines.append(f"• {date_s} — {part} ({vehicle}) — {price} ({seller})")
 
     await update.message.reply_text("\n".join(lines))
 
@@ -320,9 +325,9 @@ async def byseller(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     stats = {}
     for r in rows:
-        seller = r[3] if len(r) > 3 else "?"
+        seller = r[4] if len(r) > 4 else "?"
         try:
-            price = float(r[2])
+            price = float(r[3])
         except (IndexError, ValueError):
             price = 0.0
         if seller not in stats:
@@ -340,70 +345,11 @@ async def byseller(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines))
 
 
-# ===== КОМАНДЫ: ПРОДАЖИ ПО МАШИНАМ =====
-
-async def byvehicle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /byvehicle Машина | Деталь | Цена
-    Записывает продажу детали с привязкой к донорской машине, в отдельный лист ByVehicle.
-    Также можно отправить с фото.
-
-    Пример: /byvehicle GL450 | Бампер передний | 5000
-    """
-    raw_text = update.message.text or update.message.caption or ""
-    parts = raw_text.split()
-    if parts and parts[0].startswith("/byvehicle"):
-        parts = parts[1:]
-
-    if len(parts) < 3:
-        await update.message.reply_text(
-            "Используй так:\n/byvehicle Машина Деталь Цена\n\n"
-            "Пример:\n/byvehicle GL450 Бампер передний 5000\n\n"
-            "Первое слово — машина, последнее — цена, всё остальное — название детали.\n"
-            "Можно прикрепить фото детали к этому сообщению."
-        )
-        return
-
-    try:
-        price = float(parts[-1])
-    except ValueError:
-        await update.message.reply_text("Последним должна быть цена (число). Пример: /byvehicle GL450 Бампер передний 5000")
-        return
-
-    vehicle = parts[0]
-    part_name = " ".join(parts[1:-1])
-
-    seller = update.message.from_user.first_name
-    now = datetime.now().strftime("%d.%m.%Y %H:%M")
-
-    try:
-        sheet = get_byvehicle_sheet()
-        sheet.append_row([now, vehicle, part_name, price, seller])
-    except Exception as e:
-        logging.error(f"Ошибка записи в ByVehicle: {e}")
-        await update.message.reply_text("⚠️ Не получилось записать в таблицу ByVehicle.")
-        return
-
-    text = (
-        f"🚗 Записано (по машине {vehicle}):\n"
-        f"Деталь: {part_name}\n"
-        f"Цена: {price:.2f}\n"
-        f"Продал: {seller}\n"
-        f"Дата: {now}"
-    )
-
-    if update.message.photo:
-        await update.message.reply_photo(
-            photo=update.message.photo[-1].file_id,
-            caption=text,
-        )
-    else:
-        await update.message.reply_text(text)
-
+# ===== КОМАНДЫ: ПО МАШИНАМ =====
 
 async def vehiclestats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /vehiclestats Машина — сумма выручки по конкретной машине
+    /vehiclestats Машина — статистика по конкретной машине
     Пример: /vehiclestats GL450
     """
     if not context.args:
@@ -413,11 +359,11 @@ async def vehiclestats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args).lower()
 
     try:
-        sheet = get_byvehicle_sheet()
+        sheet = get_sales_sheet()
         rows = sheet.get_all_values()[1:]
     except Exception as e:
-        logging.error(f"Ошибка чтения ByVehicle: {e}")
-        await update.message.reply_text("⚠️ Не получилось прочитать таблицу ByVehicle.")
+        logging.error(f"Ошибка чтения таблицы: {e}")
+        await update.message.reply_text("⚠️ Не получилось прочитать таблицу.")
         return
 
     matches = [r for r in rows if len(r) > 1 and query in r[1].lower()]
@@ -501,7 +447,7 @@ async def profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_sales = 0.0
     for r in sales_rows:
         try:
-            total_sales += float(r[2])
+            total_sales += float(r[3])
         except (IndexError, ValueError):
             continue
 
@@ -559,11 +505,11 @@ async def weekly_report(context: ContextTypes.DEFAULT_TYPE):
         stats = {}
         for r in week_rows:
             try:
-                price = float(r[2])
+                price = float(r[3])
             except (IndexError, ValueError):
                 price = 0.0
             total_sum += price
-            seller = r[3] if len(r) > 3 else "?"
+            seller = r[4] if len(r) > 4 else "?"
             stats[seller] = stats.get(seller, 0.0) + price
 
         top_seller = max(stats.items(), key=lambda x: x[1])
@@ -589,28 +535,19 @@ async def groupid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"ID этого чата: {chat_id}")
 
 
-# ===== ПОМОЩЬ =====
-
-async def groupid(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/groupid — показывает ID текущего чата/группы"""
-    await update.message.reply_text(f"ID этого чата: {update.effective_chat.id}")
-
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ===== ПОМОЩЬ =====async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 Команды бота:\n\n"
         "Продажи:\n"
-        "/sold Деталь Цена — отметить продажу (можно с фото)\n"
+        "/sold Машина Деталь Цена — отметить продажу (можно с фото)\n"
         "/cancel — отменить последнюю продажу\n\n"
         "Статистика:\n"
         "/total — общая сумма всех продаж\n"
         "/today — продажи за сегодня\n"
         "/month — продажи за текущий месяц\n"
         "/list — последние 10 продаж\n"
-        "/find Деталь — поиск по детали\n"
-        "/byseller — статистика по продавцам\n\n"
-        "По машинам:\n"
-        "/byvehicle Машина | Деталь | Цена — продажа с привязкой к машине\n"
+        "/find Деталь_или_Машина — поиск\n"
+        "/byseller — статистика по продавцам\n"
         "/vehiclestats Машина — статистика по машине\n\n"
         "Финансы:\n"
         "/expense Название Сумма — записать расход\n"
@@ -644,11 +581,6 @@ def main():
     app.add_handler(CommandHandler("byseller", byseller))
 
     # По машинам
-    app.add_handler(CommandHandler("byvehicle", byvehicle))
-    app.add_handler(MessageHandler(
-        filters.PHOTO & filters.CaptionRegex(r"^/byvehicle"),
-        byvehicle,
-    ))
     app.add_handler(CommandHandler("vehiclestats", vehiclestats))
 
     # Финансы
@@ -661,7 +593,6 @@ def main():
     # Помощь
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("start", help_command))
-    app.add_handler(CommandHandler("groupid", groupid))
 
     # Еженедельный отчёт (каждый понедельник в 09:00)
     if app.job_queue:
