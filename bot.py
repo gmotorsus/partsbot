@@ -530,7 +530,45 @@ async def vehiclestats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines))
 
 
-# ===== КОМАНДЫ: РАСХОДЫ И ПРИБЫЛЬ =====
+async def newcar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /newcar Название_машины Цена_покупки
+    Создаёт новый лист в 'Разбор бюджет' для новой машины (со всеми формулами),
+    указывая цену покупки. Прочие расходы и продажи добавляются позже через
+    /expense и /sold.
+    """
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "Используй так:\n/newcar Название_машины Цена_покупки\n\n"
+            "Пример:\n/newcar BMW_x5_black 8000\n\n"
+            "Последнее слово — цена покупки (число), остальное — название машины "
+            "(оно станет названием листа в 'Разбор бюджет')."
+        )
+        return
+
+    try:
+        purchase_price = float(context.args[-1])
+    except ValueError:
+        await update.message.reply_text("Последним должна быть цена покупки (число). Пример: /newcar BMW_x5_black 8000")
+        return
+
+    car_name = " ".join(context.args[:-1])
+
+    success, error = create_new_car_sheet(car_name, purchase_price)
+
+    if not success:
+        await update.message.reply_text(f"⚠️ Не получилось создать лист: {error}")
+        return
+
+    await update.message.reply_text(
+        f"🚗 Создана новая машина: {car_name}\n"
+        f"Цена покупки: {purchase_price:.2f}\n\n"
+        f"Теперь можешь использовать:\n"
+        f"/sold\n{car_name}\nДеталь\nЦена\n\n"
+        f"/expense {car_name}_расход Сумма — для прочих расходов\n"
+        f"/vehiclestats {car_name} — статистика"
+    )
+
 
 async def expense(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/expense Название Сумма — записать расход"""
@@ -742,7 +780,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/list — последние 10 продаж\n"
         "/find Деталь_или_Машина — поиск\n"
         "/byseller — статистика по продавцам\n"
-        "/vehiclestats Машина — статистика по машине\n\n"
+        "/vehiclestats Машина — статистика по машине\n"
+        "/newcar Название Цена_покупки — добавить новую машину\n\n"
         "/help — это сообщение"
     )
 
@@ -772,6 +811,7 @@ def main():
 
     # По машинам
     app.add_handler(CommandHandler("vehiclestats", vehiclestats))
+    app.add_handler(CommandHandler("newcar", newcar))
 
     # Финансы
     app.add_handler(CommandHandler("expense", expense))
