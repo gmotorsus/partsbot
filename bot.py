@@ -14,7 +14,7 @@ SPREADSHEET_ID = "1qwwCLpmu-FYMDAStR4qKWSSbpFBb-mG-kbNrcdKrSS8"
 BUDGET_SPREADSHEET_ID = "1GwxtdYFLL9965adWGw6pEK22lgm8UT112TlxR4ajacc"
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
-REMINDER_TEXT = "⚠️ Не забудь снять/архивировать листинг на eBay и Facebook!"
+REMINDER_TEXT = "⚠️ Не забудь снять/архивировать листинг на eBay и Facebook и поставить реакцию!"
 
 # ===== ПОДКЛЮЧЕНИЕ К GOOGLE SHEETS =====
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
