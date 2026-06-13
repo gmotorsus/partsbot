@@ -74,9 +74,9 @@ def get_budget_vehicle_costs(query):
             except (IndexError, ValueError):
                 return 0.0
 
-        sold_total = to_float(0)     # колонка A
-        purchase_price = to_float(1)  # колонка B
-        other_expenses = to_float(3)  # колонка D
+        sold_total = to_float(0)     # колонка A — Проданно на сумму
+        purchase_price = to_float(1)  # колонка B — Цена покупки
+        other_expenses = to_float(2)  # колонка C — Прочие расходы
 
         return purchase_price, other_expenses, sold_total
     except Exception as e:
