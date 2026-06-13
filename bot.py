@@ -86,7 +86,58 @@ def get_budget_vehicle_costs(query):
         return 0.0, 0.0, 0.0
 
 
-# ===== КОМАНДЫ: ПРОДАЖИ =====
+def get_all_budget_vehicle_stats():
+    """
+    Проходит по всем листам в 'Разбор бюджет' (кроме 'Бюджет') и для каждого
+    возвращает (название, sold, profit, roi, margin) из строки 3:
+    B=Проданно, C=Цена покупки, D=Прочие расходы, F=Прибыль, G=ROI%, H=Маржа.
+    """
+    results = []
+    try:
+        client = get_client()
+        spreadsheet = client.open_by_key(BUDGET_SPREADSHEET_ID)
+
+        for ws in spreadsheet.worksheets():
+            title = ws.title
+            if title.strip().lower() == "бюджет":
+                continue
+
+            try:
+                row3 = ws.get_values("A3:H3")
+                row3 = row3[0] if row3 else []
+
+                def cell_to_float(idx):
+                    try:
+                        val = row3[idx] if idx < len(row3) else ""
+                        val = str(val).replace(",", ".").replace(" ", "").replace("%", "")
+                        return float(val) if val else 0.0
+                    except (ValueError, IndexError):
+                        return 0.0
+
+                sold = cell_to_float(1)      # B
+                purchase = cell_to_float(2)  # C
+                other_exp = cell_to_float(3) # D
+                profit = cell_to_float(5)    # F
+                roi = cell_to_float(6)       # G
+                margin = cell_to_float(7)    # H
+
+                results.append({
+                    "title": title,
+                    "sold": sold,
+                    "purchase": purchase,
+                    "other_exp": other_exp,
+                    "profit": profit,
+                    "roi": roi,
+                    "margin": margin,
+                })
+            except Exception as e:
+                logging.error(f"Ошибка чтения листа '{title}': {e}")
+                continue
+    except Exception as e:
+        logging.error(f"Ошибка чтения 'Разбор бюджет': {e}")
+
+    return results
+
 
 async def sold(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -650,6 +701,47 @@ async def weekly_report(context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"Не удалось отправить еженедельный отчёт: {e}")
 
 
+# ===== СВОДКА ПО "РАЗБОР БЮДЖЕТ" =====
+
+async def totalbudget(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/totalbudget — сводка по всем машинам из таблицы 'Разбор бюджет'"""
+    stats = get_all_budget_vehicle_stats()
+
+    if not stats:
+        await update.message.reply_text("⚠️ Не получилось прочитать таблицу 'Разбор бюджет'.")
+        return
+
+    lines = ["📊 Сводка по таблице 'Разбор бюджет':\n"]
+
+    total_sold = 0.0
+    total_expenses = 0.0
+    total_profit = 0.0
+
+    for s in stats:
+        lines.append(
+            f"🚗 {s['title']}\n"
+            f"   Продано: {s['sold']:.2f} | Прибыль: {s['profit']:.2f} | "
+            f"ROI: {s['roi']:.1f}% | Маржа: {s['margin']:.1f}%"
+        )
+        total_sold += s["sold"]
+        total_expenses += s["purchase"] + s["other_exp"]
+        total_profit += s["profit"]
+
+    lines.append("")
+    lines.append(f"💰 Всего продано: {total_sold:.2f}")
+    lines.append(f"💸 Всего расходов: {total_expenses:.2f}")
+    lines.append(f"📊 Общая прибыль: {total_profit:.2f}")
+
+    if total_expenses > 0:
+        overall_roi = (total_profit / total_expenses) * 100
+        lines.append(f"📈 Общий ROI: {overall_roi:.1f}%")
+    if total_sold > 0:
+        overall_margin = (total_profit / total_sold) * 100
+        lines.append(f"📐 Общая маржа: {overall_margin:.1f}%")
+
+    await update.message.reply_text("\n".join(lines))
+
+
 # ===== СЛУЖЕБНОЕ =====
 
 async def groupid(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -673,7 +765,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/list — последние 10 продаж\n"
         "/find Деталь_или_Машина — поиск\n"
         "/byseller — статистика по продавцам\n"
-        "/vehiclestats Машина — статистика по машине\n\n"
+        "/vehiclestats Машина — статистика по машине\n"
+        "/totalbudget — сводка по всем машинам из 'Разбор бюджет'\n\n"
         "Финансы:\n"
         "/expense Название Сумма — записать расход\n"
         "/profit — чистая прибыль (продажи минус расходы)\n\n"
@@ -707,6 +800,7 @@ def main():
 
     # По машинам
     app.add_handler(CommandHandler("vehiclestats", vehiclestats))
+    app.add_handler(CommandHandler("totalbudget", totalbudget))
 
     # Финансы
     app.add_handler(CommandHandler("expense", expense))
