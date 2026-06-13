@@ -568,8 +568,9 @@ def create_new_car_sheet(car_name, purchase_price):
         # Устанавливаем заголовок и цену покупки
         new_ws.update_acell("A1", car_name)
         new_ws.update_acell("C3", purchase_price)
-        # Обнуляем "Прочие расходы" и "Проданно на сумму" для новой машины
-        new_ws.update_acell("B3", 0)
+        # B3 — формула суммы "Проданно на сумму" (после очистки строк 4+ даст 0 автоматически)
+        new_ws.update_acell("B3", "=СУММ(B4:B999)")
+        # Обнуляем "Прочие расходы" для новой машины
         new_ws.update_acell("D3", 0)
 
         return True, ""
