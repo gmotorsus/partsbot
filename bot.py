@@ -692,6 +692,7 @@ async def totalprofit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_expenses = bot_expenses + budget_expenses
     total_profit = total_sales - total_expenses
 
+    lines.append(f"🔢 Количество продаж (бот): {len(sales_rows)}")
     lines.append(f"💰 Продажи через бота: {bot_sales:.2f}")
     lines.append(f"💸 Расходы через бота: {bot_expenses:.2f}")
     lines.append(f"💰 Продано по 'Разбор бюджет': {budget_sold:.2f}")
