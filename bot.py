@@ -530,6 +530,54 @@ async def vehiclestats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines))
 
 
+def create_new_car_sheet(car_name, purchase_price):
+    """
+    Создаёт новый лист для машины в 'Разбор бюджет' путём дублирования
+    первого существующего листа-машины (со всеми формулами), затем:
+    - переименовывает дубликат в car_name
+    - очищает строки с деталями (4+)
+    - устанавливает заголовок A1 и B3 (цена покупки)
+    Возвращает (True, "") при успехе, или (False, "сообщение об ошибке").
+    """
+    try:
+        client = get_client()
+        spreadsheet = client.open_by_key(BUDGET_SPREADSHEET_ID)
+
+        # Проверяем, нет ли уже листа с таким названием
+        for ws in spreadsheet.worksheets():
+            if ws.title.strip().lower() == car_name.strip().lower():
+                return False, f"Лист '{car_name}' уже существует."
+
+        # Берём первый лист-машину как шаблон (не 'Бюджет')
+        template = None
+        for ws in spreadsheet.worksheets():
+            if ws.title.strip().lower() != "бюджет":
+                template = ws
+                break
+
+        if template is None:
+            return False, "Не нашёл лист-шаблон для копирования."
+
+        new_ws = template.duplicate(new_sheet_name=car_name)
+
+        # Очищаем строки с деталями (начиная с 4-й), оставляя строку 1-3 (шапка + итог)
+        max_row = new_ws.row_count
+        if max_row > 3:
+            new_ws.batch_clear([f"A4:H{max_row}"])
+
+        # Устанавливаем заголовок и цену покупки
+        new_ws.update_acell("A1", car_name)
+        new_ws.update_acell("C3", purchase_price)
+        # Обнуляем "Прочие расходы" и "Проданно на сумму" для новой машины
+        new_ws.update_acell("B3", 0)
+        new_ws.update_acell("D3", 0)
+
+        return True, ""
+    except Exception as e:
+        logging.error(f"Ошибка создания нового листа машины '{car_name}': {e}")
+        return False, str(e)
+
+
 async def newcar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /newcar Название_машины Цена_покупки
