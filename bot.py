@@ -481,11 +481,18 @@ async def profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     net_profit = total_sales - total_expenses
 
+    if total_expenses > 0:
+        roi = (net_profit / total_expenses) * 100
+        roi_line = f"📈 ROI: {roi:.1f}%"
+    else:
+        roi_line = "📈 ROI: — (расходы не записаны)"
+
     await update.message.reply_text(
         f"📈 Итоги:\n\n"
         f"💰 Продажи: {total_sales:.2f}\n"
         f"💸 Расходы: {total_expenses:.2f}\n"
-        f"📊 Чистая прибыль: {net_profit:.2f}"
+        f"📊 Чистая прибыль: {net_profit:.2f}\n"
+        f"{roi_line}"
     )
 
 
