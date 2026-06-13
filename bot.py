@@ -57,26 +57,27 @@ def get_budget_vehicle_costs(query):
     """
     Возвращает (purchase_price, other_expenses, sold_total) из листа машины
     в таблице 'Разбор бюджет', или (0.0, 0.0, 0.0) если лист не найден / ошибка.
-    Структура листа: строка 3, колонка A = Проданно на сумму, B = Цена покупки,
-    D = Прочие расходы.
+    Структура листа: строка 3 — A = Проданно на сумму, B = Цена покупки,
+    C = Прочие расходы.
     """
     try:
         ws = find_budget_vehicle_sheet(query)
         if ws is None:
             return 0.0, 0.0, 0.0
 
-        row3 = ws.row_values(3)
-
-        def to_float(idx):
+        def cell_to_float(cell):
             try:
-                val = row3[idx].replace(",", ".").replace(" ", "")
+                val = ws.acell(cell).value
+                if val is None:
+                    return 0.0
+                val = str(val).replace(",", ".").replace(" ", "")
                 return float(val) if val else 0.0
-            except (IndexError, ValueError):
+            except (ValueError, Exception):
                 return 0.0
 
-        sold_total = to_float(0)     # колонка A — Проданно на сумму
-        purchase_price = to_float(1)  # колонка B — Цена покупки
-        other_expenses = to_float(2)  # колонка C — Прочие расходы
+        sold_total = cell_to_float("A3")
+        purchase_price = cell_to_float("B3")
+        other_expenses = cell_to_float("C3")
 
         return purchase_price, other_expenses, sold_total
     except Exception as e:
