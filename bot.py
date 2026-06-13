@@ -65,19 +65,20 @@ def get_budget_vehicle_costs(query):
         if ws is None:
             return 0.0, 0.0, 0.0
 
-        def cell_to_float(cell):
+        row3 = ws.get_values("A3:E3")
+        row3 = row3[0] if row3 else []
+
+        def cell_to_float(idx):
             try:
-                val = ws.acell(cell).value
-                if val is None:
-                    return 0.0
+                val = row3[idx] if idx < len(row3) else ""
                 val = str(val).replace(",", ".").replace(" ", "")
                 return float(val) if val else 0.0
-            except (ValueError, Exception):
+            except (ValueError, IndexError):
                 return 0.0
 
-        sold_total = cell_to_float("A3")
-        purchase_price = cell_to_float("B3")
-        other_expenses = cell_to_float("C3")
+        sold_total = cell_to_float(1)      # B — Проданно на сумму
+        purchase_price = cell_to_float(2)  # C — Цена покупки
+        other_expenses = cell_to_float(3)  # D — Прочие расходы
 
         return purchase_price, other_expenses, sold_total
     except Exception as e:
