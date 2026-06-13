@@ -355,33 +355,23 @@ async def byvehicle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if parts and parts[0].startswith("/byvehicle"):
         parts = parts[1:]
 
-    full_text = " ".join(parts)
-
-    if "|" not in full_text:
+    if len(parts) < 3:
         await update.message.reply_text(
-            "Используй так:\n/byvehicle Машина | Деталь | Цена\n\n"
-            "Пример:\n/byvehicle GL450 | Бампер передний | 5000\n\n"
+            "Используй так:\n/byvehicle Машина Деталь Цена\n\n"
+            "Пример:\n/byvehicle GL450 Бампер передний 5000\n\n"
+            "Первое слово — машина, последнее — цена, всё остальное — название детали.\n"
             "Можно прикрепить фото детали к этому сообщению."
         )
         return
 
-    segments = [s.strip() for s in full_text.split("|")]
-
-    if len(segments) < 3:
-        await update.message.reply_text(
-            "Нужно указать 3 части через '|':\n/byvehicle Машина | Деталь | Цена"
-        )
-        return
-
-    vehicle = segments[0]
-    part_name = segments[1]
-    price_str = segments[2]
-
     try:
-        price = float(price_str)
+        price = float(parts[-1])
     except ValueError:
-        await update.message.reply_text("Цена должна быть числом. Пример: /byvehicle GL450 | Бампер | 5000")
+        await update.message.reply_text("Последним должна быть цена (число). Пример: /byvehicle GL450 Бампер передний 5000")
         return
+
+    vehicle = parts[0]
+    part_name = " ".join(parts[1:-1])
 
     seller = update.message.from_user.first_name
     now = datetime.now().strftime("%d.%m.%Y %H:%M")
@@ -601,6 +591,11 @@ async def groupid(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ===== ПОМОЩЬ =====
 
+async def groupid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/groupid — показывает ID текущего чата/группы"""
+    await update.message.reply_text(f"ID этого чата: {update.effective_chat.id}")
+
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 Команды бота:\n\n"
@@ -666,6 +661,7 @@ def main():
     # Помощь
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("start", help_command))
+    app.add_handler(CommandHandler("groupid", groupid))
 
     # Еженедельный отчёт (каждый понедельник в 09:00)
     if app.job_queue:
