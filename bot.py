@@ -468,7 +468,10 @@ async def vehiclestats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Нет записей по машине: {query}")
         return
 
-    net_profit = total_sum - vehicle_expenses
+    # Для расчёта прибыли используем выручку бота, либо данные из таблицы "Разбор бюджет",
+    # если в боте пока нет записей по этой машине
+    revenue = total_sum + budget_sold
+    net_profit = revenue - vehicle_expenses
 
     lines = [f"🚗 Статистика по машине: {query}\n", f"Деталей продано (бот): {len(matches)}\n"]
     for r in matches[-15:]:
@@ -494,8 +497,8 @@ async def vehiclestats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         lines.append("📈 ROI: — (расходы не записаны)")
 
-    if total_sum > 0:
-        margin = (net_profit / total_sum) * 100
+    if revenue > 0:
+        margin = (net_profit / revenue) * 100
         lines.append(f"📐 Маржа прибыли: {margin:.1f}%")
     else:
         lines.append("📐 Маржа прибыли: —")
