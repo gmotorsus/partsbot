@@ -599,6 +599,58 @@ async def expense(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def genexpense(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /genexpense Название Сумма — общий расход бизнеса (не по конкретной машине)
+    Записывает строкой в лист 'Бюджет' (колонки A=Название, B=Сумма).
+    Пример: /genexpense Инструменты 100
+    """
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "Используй так:\n/genexpense Название Сумма\n\nПример:\n/genexpense Инструменты 100\n\n"
+            "Это общий расход бизнеса, не привязанный к конкретной машине."
+        )
+        return
+
+    try:
+        amount = float(context.args[-1])
+    except ValueError:
+        await update.message.reply_text("Последним должна быть сумма (число). Пример: /genexpense Инструменты 100")
+        return
+
+    expense_name = " ".join(context.args[:-1])
+
+    try:
+        spreadsheet = get_budget_spreadsheet()
+        ws = spreadsheet.worksheet("Бюджет")
+    except Exception as e:
+        logging.error(f"Не нашёл лист 'Бюджет': {e}")
+        await update.message.reply_text("⚠️ Не получилось найти лист 'Бюджет'.")
+        return
+
+    try:
+        all_values = ws.get_all_values()
+        row_num = 1
+        for i, row in enumerate(all_values):
+            a_val = row[0] if len(row) > 0 else ""
+            if a_val.strip():
+                row_num = i + 1
+        row_num += 1  # первая пустая строка после последней заполненной
+
+        ws.update(f"A{row_num}:B{row_num}", [[expense_name, amount]])
+    except Exception as e:
+        logging.error(f"Ошибка записи общего расхода: {e}")
+        await update.message.reply_text("⚠️ Не получилось записать расход в таблицу.")
+        return
+
+    added_by = update.message.from_user.first_name
+    await update.message.reply_text(
+        f"💸 Добавлен общий расход бизнеса:\n"
+        f"{expense_name}: {amount:.2f}\n"
+        f"Добавил: {added_by}"
+    )
+
+
 # ===== ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ =====
 
 async def weekly_report(context: ContextTypes.DEFAULT_TYPE):
@@ -718,6 +770,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/cancel — отменить последнюю продажу\n\n"
         "Финансы:\n"
         "/expense Машина Сумма — добавить прочий расход к машине\n"
+        "/genexpense Название Сумма — общий расход бизнеса (не по машине)\n"
         "/totalprofit — общая прибыль по всем машинам\n\n"
         "Статистика:\n"
         "/today — продажи за сегодня\n"
@@ -760,6 +813,7 @@ def main():
 
     # Финансы
     app.add_handler(CommandHandler("expense", expense))
+    app.add_handler(CommandHandler("genexpense", genexpense))
     app.add_handler(CommandHandler("totalprofit", totalprofit))
 
     # Служебное
