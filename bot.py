@@ -684,9 +684,9 @@ async def budgetstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             return 0.0
 
-    income = cell("H1")
-    cash_balance = cell("J1")
-    ebay_balance = cell("K1")
+    income = cell("G1")
+    cash_balance = cell("I1")
+    ebay_balance = cell("J1")
 
     total_expenses = total_general + total_car + total_ebay_exp
 
