@@ -57,28 +57,32 @@ def get_budget_vehicle_costs(query):
     """
     Возвращает (purchase_price, other_expenses, sold_total) из листа машины
     в таблице 'Разбор бюджет', или (0.0, 0.0, 0.0) если лист не найден / ошибка.
-    Структура листа: строка 3 — A = Проданно на сумму, B = Цена покупки,
-    C = Прочие расходы.
+    Структура листа (с разбивкой продаж на cash/ebay):
+    Строка 2 — заголовки, строка 3 — подзаголовки (cash/ebay), строка 4 — итоги:
+    B = Cash, C = ebay, D = Цена покупки, E = Прочие расходы.
+    Проданно на сумму = B + C (cash + ebay).
     """
     try:
         ws = find_budget_vehicle_sheet(query)
         if ws is None:
             return 0.0, 0.0, 0.0
 
-        row3 = ws.get_values("A3:E3")
-        row3 = row3[0] if row3 else []
+        row4 = ws.get_values("A4:F4")
+        row4 = row4[0] if row4 else []
 
         def cell_to_float(idx):
             try:
-                val = row3[idx] if idx < len(row3) else ""
+                val = row4[idx] if idx < len(row4) else ""
                 val = str(val).replace(",", ".").replace(" ", "")
                 return float(val) if val else 0.0
             except (ValueError, IndexError):
                 return 0.0
 
-        sold_total = cell_to_float(1)      # B — Проданно на сумму
-        purchase_price = cell_to_float(2)  # C — Цена покупки
-        other_expenses = cell_to_float(3)  # D — Прочие расходы
+        cash = cell_to_float(1)            # B — Cash
+        ebay = cell_to_float(2)            # C — ebay
+        sold_total = cash + ebay           # Проданно на сумму = cash + ebay
+        purchase_price = cell_to_float(3)  # D — Цена покупки
+        other_expenses = cell_to_float(4)  # E — Прочие расходы
 
         return purchase_price, other_expenses, sold_total
     except Exception as e:
@@ -89,8 +93,9 @@ def get_budget_vehicle_costs(query):
 def get_all_budget_vehicle_stats():
     """
     Проходит по всем листам в 'Разбор бюджет' (кроме 'Бюджет') и для каждого
-    возвращает (название, sold, profit, roi, margin) из строки 3:
-    B=Проданно, C=Цена покупки, D=Прочие расходы, F=Прибыль, G=ROI%, H=Маржа.
+    возвращает данные из строки 4 (с разбивкой продаж на cash/ebay):
+    B=Cash, C=ebay, D=Цена покупки, E=Прочие расходы, G=Прибыль, H=ROI%, I=Маржа.
+    Проданно на сумму = B + C.
     """
     results = []
     try:
@@ -104,24 +109,24 @@ def get_all_budget_vehicle_stats():
 
             try:
                 all_values = ws.get_all_values()
-                row3 = all_values[2] if len(all_values) > 2 else []
+                row4 = all_values[3] if len(all_values) > 3 else []
 
                 def cell_to_float(idx):
                     try:
-                        val = row3[idx] if idx < len(row3) else ""
+                        val = row4[idx] if idx < len(row4) else ""
                         val = str(val).replace(",", ".").replace(" ", "").replace("%", "")
                         return float(val) if val else 0.0
                     except (ValueError, IndexError):
                         return 0.0
 
-                sold = cell_to_float(1)      # B
-                purchase = cell_to_float(2)  # C
-                other_exp = cell_to_float(3) # D
-                profit = cell_to_float(5)    # F
-                roi = cell_to_float(6)       # G
-                margin = cell_to_float(7)    # H
-
-                logging.info(f"[{title}] row3={row3}")
+                cash = cell_to_float(1)      # B — Cash
+                ebay = cell_to_float(2)      # C — ebay
+                sold = cash + ebay           # Проданно на сумму
+                purchase = cell_to_float(3)  # D — Цена покупки
+                other_exp = cell_to_float(4) # E — Прочие расходы
+                profit = cell_to_float(6)    # G — Прибыль
+                roi = cell_to_float(7)       # H — ROI%
+                margin = cell_to_float(8)    # I — Маржа
 
                 results.append({
                     "title": title,
@@ -537,8 +542,10 @@ def create_new_car_sheet(car_name, purchase_price):
     Создаёт новый лист для машины в 'Разбор бюджет' путём дублирования
     первого существующего листа-машины (со всеми формулами), затем:
     - переименовывает дубликат в car_name
-    - очищает строки с деталями (4+)
-    - устанавливает заголовок A1 и B3 (цена покупки)
+    - очищает строки с деталями (5+)
+    - устанавливает заголовок A1 и D4 (цена покупки)
+    Структура листа: строка 1=название, строка 2=заголовки,
+    строка 3=cash/ebay подзаголовки, строка 4=итоги, строка 5+=детали.
     Возвращает (True, "") при успехе, или (False, "сообщение об ошибке").
     """
     try:
@@ -562,18 +569,19 @@ def create_new_car_sheet(car_name, purchase_price):
 
         new_ws = template.duplicate(new_sheet_name=car_name)
 
-        # Очищаем строки с деталями (начиная с 4-й), оставляя строку 1-3 (шапка + итог)
+        # Очищаем строки с деталями (начиная с 5-й), оставляя строки 1-4 (шапка + итог)
         max_row = new_ws.row_count
-        if max_row > 3:
-            new_ws.batch_clear([f"A4:H{max_row}"])
+        if max_row > 4:
+            new_ws.batch_clear([f"A5:I{max_row}"])
 
         # Устанавливаем заголовок и цену покупки
         new_ws.update_acell("A1", car_name)
-        new_ws.update_acell("C3", purchase_price)
-        # B3 — формула суммы "Проданно на сумму" (после очистки строк 4+ даст 0 автоматически)
-        new_ws.update_acell("B3", "=СУММ(B4:B999)")
+        new_ws.update_acell("D4", purchase_price)
+        # B4/C4 — формулы суммы cash/ebay (после очистки строк 5+ дадут 0 автоматически)
+        new_ws.update_acell("B4", "=СУММ(B5:B999)")
+        new_ws.update_acell("C4", "=СУММ(C5:C999)")
         # Обнуляем "Прочие расходы" для новой машины
-        new_ws.update_acell("D3", 0)
+        new_ws.update_acell("E4", 0)
 
         return True, ""
     except Exception as e:
