@@ -708,6 +708,8 @@ async def totalprofit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = ["📊 Общая статистика:\n"]
 
     total_sold = 0.0
+    total_cash = 0.0
+    total_ebay = 0.0
     total_expenses = 0.0
     total_profit = 0.0
     total_count = 0
@@ -717,10 +719,12 @@ async def totalprofit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for s in stats:
             lines.append(
                 f"🚗 {s['title']}\n"
-                f"   Продано: {s['sold']:.2f} | Прибыль: {s['profit']:.2f} | "
+                f"   Cash: {s['cash']:.2f} | eBay: {s['ebay']:.2f} | Прибыль: {s['profit']:.2f} | "
                 f"ROI: {s['roi']:.1f}% | Маржа: {s['margin']:.1f}%"
             )
             total_sold += s["sold"]
+            total_cash += s["cash"]
+            total_ebay += s["ebay"]
             total_expenses += s["purchase"] + s["other_exp"]
             total_profit += s["profit"]
         lines.append("")
@@ -733,6 +737,8 @@ async def totalprofit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
     lines.append(f"🔢 Количество продаж: {total_count}")
+    lines.append(f"💵 Всего Cash: {total_cash:.2f}")
+    lines.append(f"🌐 Всего eBay: {total_ebay:.2f}")
     lines.append(f"💰 Всего продаж: {total_sold:.2f}")
     lines.append(f"💸 Всего расходов: {total_expenses:.2f}")
     lines.append(f"📊 Общая чистая прибыль: {total_profit:.2f}")
