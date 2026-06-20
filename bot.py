@@ -651,6 +651,59 @@ async def genexpense(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def budgetstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /budgetstats — статистика по листу 'Бюджет':
+    Общие расходы (B), Покупка авто (C), eBay расходы (D),
+    Доход (H1), Наличные/Остаток (J1), eBay на карте (K1).
+    """
+    try:
+        spreadsheet = get_budget_spreadsheet()
+        ws = spreadsheet.worksheet("Бюджет")
+        all_values = ws.get_all_values()
+    except Exception as e:
+        logging.error(f"Ошибка чтения листа 'Бюджет': {e}")
+        await update.message.reply_text("⚠️ Не получилось прочитать лист 'Бюджет'.")
+        return
+
+    def col_val(row, idx):
+        return row[idx] if len(row) > idx else ""
+
+    total_general = 0.0
+    total_car = 0.0
+    total_ebay_exp = 0.0
+
+    for row in all_values:
+        total_general += cell_to_float(col_val(row, 1))  # B
+        total_car += cell_to_float(col_val(row, 2))       # C
+        total_ebay_exp += cell_to_float(col_val(row, 3))  # D
+
+    def cell(addr):
+        try:
+            return cell_to_float(ws.acell(addr).value)
+        except Exception:
+            return 0.0
+
+    income = cell("H1")
+    cash_balance = cell("J1")
+    ebay_balance = cell("K1")
+
+    total_expenses = total_general + total_car + total_ebay_exp
+
+    lines = [
+        "📊 Статистика по 'Бюджет':\n",
+        f"💸 Общие расходы: {total_general:.2f}",
+        f"🚗 Покупка авто: {total_car:.2f}",
+        f"🌐 eBay расходы: {total_ebay_exp:.2f}",
+        f"💸 Всего расходов: {total_expenses:.2f}\n",
+        f"💰 Доход: {income:.2f}\n",
+        f"💵 Наличные на руках: {cash_balance:.2f}",
+        f"🌐 На карте (eBay): {ebay_balance:.2f}",
+    ]
+
+    await update.message.reply_text("\n".join(lines))
+
+
 # ===== ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ =====
 
 async def weekly_report(context: ContextTypes.DEFAULT_TYPE):
@@ -777,6 +830,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Финансы:\n"
         "/expense Машина Сумма — добавить прочий расход к машине\n"
         "/genexpense Название Сумма — общий расход бизнеса (не по машине)\n"
+        "/budgetstats — статистика по листу 'Бюджет' (доход/расходы/остатки)\n"
         "/totalprofit — общая прибыль по всем машинам\n\n"
         "Статистика:\n"
         "/today — продажи за сегодня\n"
@@ -820,6 +874,7 @@ def main():
     # Финансы
     app.add_handler(CommandHandler("expense", expense))
     app.add_handler(CommandHandler("genexpense", genexpense))
+    app.add_handler(CommandHandler("budgetstats", budgetstats))
     app.add_handler(CommandHandler("totalprofit", totalprofit))
 
     # Служебное
