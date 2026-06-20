@@ -1,7 +1,8 @@
 import os
 import json
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
+from zoneinfo import ZoneInfo
 import gspread
 from google.oauth2.service_account import Credentials
 from telegram import Update
@@ -10,11 +11,37 @@ from telegram.ext import Application, CommandHandler, MessageHandler, ContextTyp
 logging.basicConfig(level=logging.INFO)
 
 # ===== НАСТРОЙКИ =====
-SPREADSHEET_ID = "1qwwCLpmu-FYMDAStR4qKWSSbpFBb-mG-kbNrcdKrSS8"
 BUDGET_SPREADSHEET_ID = "1GwxtdYFLL9965adWGw6pEK22lgm8UT112TlxR4ajacc"
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
+TIMEZONE = ZoneInfo("America/New_York")
+
+
+def now_local():
+    """Текущее время в часовом поясе Филадельфии (America/New_York)."""
+    return datetime.now(TIMEZONE)
+
+
+def today_local():
+    return now_local().date()
 
 REMINDER_TEXT = "⚠️ Не забудь снять/архивировать листинг на eBay и Facebook и поставить реакцию!"
+
+# Структура каждого листа машины в "Разбор бюджет":
+# Строка 1 = название машины
+# Строка 2 = заголовки (Запчасть, Проданно на сумму, Цена покупки, ...)
+# Строка 3 = подзаголовки (cash, ebay)
+# Строка 4 = итоговая строка (формулы): B=сумма cash, C=сумма ebay,
+#            D=Цена покупки, E=Прочие расходы, F=Всего вложено,
+#            G=Прибыль, H=ROI%, I=Маржа прибыли
+# Строка 5+ = детали: A=Запчасть, B=Cash, C=ebay, J=Дата, K=Продавец (J,K скрытые)
+FIRST_DATA_ROW = 5
+COL_PART = 1   # A
+COL_CASH = 2   # B
+COL_EBAY = 3   # C
+COL_PURCHASE = 4   # D (только строка 4)
+COL_OTHER_EXP = 5  # E (только строка 4)
+COL_DATE = 10   # J
+COL_SELLER = 11  # K
 
 # ===== ПОДКЛЮЧЕНИЕ К GOOGLE SHEETS =====
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
@@ -27,124 +54,139 @@ def get_client():
     return gspread.authorize(creds)
 
 
-def get_sales_sheet():
-    """Лист1 — продажи: Дата | Машина | Деталь | Цена | Продавец"""
+def get_budget_spreadsheet():
     client = get_client()
-    return client.open_by_key(SPREADSHEET_ID).sheet1
+    return client.open_by_key(BUDGET_SPREADSHEET_ID)
 
 
-def get_expenses_sheet():
-    """Expenses — расходы: Date | Expense | Amount | Added by"""
-    client = get_client()
-    return client.open_by_key(SPREADSHEET_ID).worksheet("Expenses")
+def get_vehicle_sheets():
+    """Возвращает список всех листов-машин (исключая 'Бюджет')."""
+    spreadsheet = get_budget_spreadsheet()
+    return [ws for ws in spreadsheet.worksheets() if ws.title.strip().lower() != "бюджет"]
 
 
 def find_budget_vehicle_sheet(query):
-    """
-    Ищет в таблице 'Разбор бюджет' лист, название которого содержит query.
-    Возвращает worksheet или None.
-    """
-    client = get_client()
-    spreadsheet = client.open_by_key(BUDGET_SPREADSHEET_ID)
+    """Ищет лист, название которого содержит query (без учёта регистра)."""
     query_lower = query.lower()
-    for ws in spreadsheet.worksheets():
+    for ws in get_vehicle_sheets():
         if query_lower in ws.title.lower():
             return ws
     return None
 
 
-def get_budget_vehicle_costs(query):
-    """
-    Возвращает (purchase_price, other_expenses, sold_total) из листа машины
-    в таблице 'Разбор бюджет', или (0.0, 0.0, 0.0) если лист не найден / ошибка.
-    Структура листа (с разбивкой продаж на cash/ebay):
-    Строка 2 — заголовки, строка 3 — подзаголовки (cash/ebay), строка 4 — итоги:
-    B = Cash, C = ebay, D = Цена покупки, E = Прочие расходы.
-    Проданно на сумму = B + C (cash + ebay).
-    """
+def cell_to_float(val):
     try:
-        ws = find_budget_vehicle_sheet(query)
-        if ws is None:
-            return 0.0, 0.0, 0.0
+        val = str(val).replace(",", ".").replace(" ", "").replace("%", "")
+        return float(val) if val else 0.0
+    except (ValueError, TypeError):
+        return 0.0
 
-        row4 = ws.get_values("A4:F4")
-        row4 = row4[0] if row4 else []
 
-        def cell_to_float(idx):
-            try:
-                val = row4[idx] if idx < len(row4) else ""
-                val = str(val).replace(",", ".").replace(" ", "")
-                return float(val) if val else 0.0
-            except (ValueError, IndexError):
-                return 0.0
+def get_vehicle_summary(ws):
+    """
+    Возвращает словарь с итогами по листу машины (строка 4):
+    cash, ebay, sold (cash+ebay), purchase, other_exp, profit, roi, margin.
+    """
+    all_values = ws.get_all_values()
+    row4 = all_values[3] if len(all_values) > 3 else []
 
-        cash = cell_to_float(1)            # B — Cash
-        ebay = cell_to_float(2)            # C — ebay
-        sold_total = cash + ebay           # Проданно на сумму = cash + ebay
-        purchase_price = cell_to_float(3)  # D — Цена покупки
-        other_expenses = cell_to_float(4)  # E — Прочие расходы
+    def get(idx):
+        return cell_to_float(row4[idx] if idx < len(row4) else "")
 
-        return purchase_price, other_expenses, sold_total
-    except Exception as e:
-        logging.error(f"Ошибка чтения 'Разбор бюджет' для '{query}': {e}")
-        return 0.0, 0.0, 0.0
+    cash = get(1)        # B
+    ebay = get(2)        # C
+    purchase = get(3)    # D
+    other_exp = get(4)   # E
+    profit = get(6)      # G
+    roi = get(7)         # H
+    margin = get(8)      # I
+
+    return {
+        "title": ws.title,
+        "cash": cash,
+        "ebay": ebay,
+        "sold": cash + ebay,
+        "purchase": purchase,
+        "other_exp": other_exp,
+        "profit": profit,
+        "roi": roi,
+        "margin": margin,
+    }
 
 
 def get_all_budget_vehicle_stats():
-    """
-    Проходит по всем листам в 'Разбор бюджет' (кроме 'Бюджет') и для каждого
-    возвращает данные из строки 4 (с разбивкой продаж на cash/ebay):
-    B=Cash, C=ebay, D=Цена покупки, E=Прочие расходы, G=Прибыль, H=ROI%, I=Маржа.
-    Проданно на сумму = B + C.
-    """
+    """Сводка по всем листам-машинам."""
     results = []
     try:
-        client = get_client()
-        spreadsheet = client.open_by_key(BUDGET_SPREADSHEET_ID)
-
-        for ws in spreadsheet.worksheets():
-            title = ws.title
-            if title.strip().lower() == "бюджет":
-                continue
-
+        for ws in get_vehicle_sheets():
             try:
-                all_values = ws.get_all_values()
-                row4 = all_values[3] if len(all_values) > 3 else []
-
-                def cell_to_float(idx):
-                    try:
-                        val = row4[idx] if idx < len(row4) else ""
-                        val = str(val).replace(",", ".").replace(" ", "").replace("%", "")
-                        return float(val) if val else 0.0
-                    except (ValueError, IndexError):
-                        return 0.0
-
-                cash = cell_to_float(1)      # B — Cash
-                ebay = cell_to_float(2)      # C — ebay
-                sold = cash + ebay           # Проданно на сумму
-                purchase = cell_to_float(3)  # D — Цена покупки
-                other_exp = cell_to_float(4) # E — Прочие расходы
-                profit = cell_to_float(6)    # G — Прибыль
-                roi = cell_to_float(7)       # H — ROI%
-                margin = cell_to_float(8)    # I — Маржа
-
-                results.append({
-                    "title": title,
-                    "sold": sold,
-                    "purchase": purchase,
-                    "other_exp": other_exp,
-                    "profit": profit,
-                    "roi": roi,
-                    "margin": margin,
-                })
+                results.append(get_vehicle_summary(ws))
             except Exception as e:
-                logging.error(f"Ошибка чтения листа '{title}': {e}")
+                logging.error(f"Ошибка чтения листа '{ws.title}': {e}")
                 continue
     except Exception as e:
         logging.error(f"Ошибка чтения 'Разбор бюджет': {e}")
-
     return results
 
+
+def find_first_empty_row(ws):
+    """Находит первую пустую строку (по колонке A), начиная с FIRST_DATA_ROW."""
+    all_values = ws.get_all_values()
+    row_num = FIRST_DATA_ROW
+    for i in range(FIRST_DATA_ROW - 1, len(all_values)):
+        row = all_values[i]
+        part_val = row[COL_PART - 1] if len(row) >= COL_PART else ""
+        if not part_val.strip():
+            return row_num
+        row_num += 1
+    return row_num
+
+
+def get_all_detail_rows(ws):
+    """
+    Возвращает список деталей с листа (начиная с FIRST_DATA_ROW):
+    [{row_num, part, cash, ebay, price, date, seller}, ...]
+    Пропускает полностью пустые строки.
+    """
+    all_values = ws.get_all_values()
+    rows = []
+    for i in range(FIRST_DATA_ROW - 1, len(all_values)):
+        row = all_values[i]
+        part = row[COL_PART - 1] if len(row) >= COL_PART else ""
+        if not part.strip():
+            continue
+        cash = cell_to_float(row[COL_CASH - 1]) if len(row) >= COL_CASH else 0.0
+        ebay = cell_to_float(row[COL_EBAY - 1]) if len(row) >= COL_EBAY else 0.0
+        price = cash if cash else ebay
+        date_s = row[COL_DATE - 1] if len(row) >= COL_DATE else ""
+        seller = row[COL_SELLER - 1] if len(row) >= COL_SELLER else ""
+        rows.append({
+            "row_num": i + 1,
+            "vehicle": ws.title,
+            "part": part,
+            "cash": cash,
+            "ebay": ebay,
+            "price": price,
+            "method": "cash" if cash else ("ebay" if ebay else "?"),
+            "date": date_s,
+            "seller": seller,
+        })
+    return rows
+
+
+def get_all_sales_everywhere():
+    """Собирает все строки-детали со всех листов машин."""
+    all_rows = []
+    for ws in get_vehicle_sheets():
+        try:
+            all_rows.extend(get_all_detail_rows(ws))
+        except Exception as e:
+            logging.error(f"Ошибка чтения деталей с листа '{ws.title}': {e}")
+            continue
+    return all_rows
+
+
+# ===== КОМАНДЫ: ПРОДАЖИ =====
 
 async def sold(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -152,20 +194,18 @@ async def sold(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Машина
     Деталь
     Цена
+    Способ (cash или ebay)
 
-    Каждая часть на новой строке.
-    Например:
+    Каждая часть на новой строке. Пример:
     /sold
     Mercedes GL450
     Бампер передний
     600
+    cash
     """
     raw_text = update.message.text or update.message.caption or ""
     lines_in = [l.strip() for l in raw_text.split("\n")]
-
-    # Первая строка — это сама команда /sold (может быть с текстом после неё, игнорируем)
     lines_in = lines_in[1:]
-    # Убираем пустые строки
     lines_in = [l for l in lines_in if l]
 
     USAGE = (
@@ -173,55 +213,75 @@ async def sold(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/sold\n"
         "Машина\n"
         "Деталь\n"
-        "Цена\n\n"
+        "Цена\n"
+        "Способ (cash или ebay)\n\n"
         "Пример:\n"
         "/sold\n"
         "Mercedes GL450\n"
         "Бампер передний\n"
-        "600\n\n"
+        "600\n"
+        "cash\n\n"
         "Можно прикрепить фото детали к этому сообщению."
     )
 
-    if len(lines_in) < 3:
+    if len(lines_in) < 4:
         await update.message.reply_text(USAGE)
         return
 
+    method = lines_in[-1].strip().lower()
+    if method not in ("cash", "ebay"):
+        await update.message.reply_text(f"Последняя строка должна быть 'cash' или 'ebay'.\n\n{USAGE}")
+        return
+
     try:
-        price = float(lines_in[-1].replace(",", "."))
+        price = float(lines_in[-2].replace(",", "."))
     except ValueError:
-        await update.message.reply_text(f"Последняя строка должна быть ценой (числом).\n\n{USAGE}")
+        await update.message.reply_text(f"Предпоследняя строка должна быть ценой (числом).\n\n{USAGE}")
         return
 
     vehicle = lines_in[0]
-    part_name = " ".join(lines_in[1:-1])
+    part_name = " ".join(lines_in[1:-2])
     seller = update.message.from_user.first_name
-    now = datetime.now().strftime("%d.%m.%Y %H:%M")
+    now = now_local().strftime("%d.%m.%Y %H:%M")
+
+    ws = find_budget_vehicle_sheet(vehicle)
+    if ws is None:
+        await update.message.reply_text(
+            f"⚠️ Не нашёл машину '{vehicle}' в таблице 'Разбор бюджет'.\n"
+            f"Сначала добавь её через /newcar."
+        )
+        return
 
     try:
-        sheet = get_sales_sheet()
-        sheet.append_row([now, vehicle, part_name, price, seller])
+        row_num = find_first_empty_row(ws)
+        cash_val = price if method == "cash" else ""
+        ebay_val = price if method == "ebay" else ""
+        # A, B, C, D, E, F, G, H, I, (пропуск), J, K
+        ws.update(f"A{row_num}", [[part_name]])
+        if cash_val != "":
+            ws.update(f"B{row_num}", [[cash_val]])
+        if ebay_val != "":
+            ws.update(f"C{row_num}", [[ebay_val]])
+        ws.update(f"J{row_num}:K{row_num}", [[now, seller]])
     except Exception as e:
-        logging.error(f"Ошибка записи в таблицу: {e}")
+        logging.error(f"Ошибка записи в 'Разбор бюджет': {e}")
         await update.message.reply_text("⚠️ Не получилось записать в таблицу, но сообщение в группе оставлено.")
+        return
 
     text = (
         f"✅ Продано: {part_name}\n"
-        f"Машина: {vehicle}\n"
-        f"Цена: {price:.2f}\n"
+        f"Машина: {ws.title}\n"
+        f"Цена: {price:.2f} ({method})\n"
         f"Продал: {seller}\n"
         f"Дата: {now}\n\n"
         f"{REMINDER_TEXT}"
     )
 
     if update.message.photo:
-        sent = await update.message.reply_photo(
-            photo=update.message.photo[-1].file_id,
-            caption=text,
-        )
+        await update.message.reply_photo(photo=update.message.photo[-1].file_id, caption=text)
     else:
-        sent = await update.message.reply_text(text)
+        await update.message.reply_text(text)
 
-    # Ставим реакцию на сообщение, чтобы все видели, что оно учтено
     try:
         await context.bot.set_message_reaction(
             chat_id=update.effective_chat.id,
@@ -233,110 +293,74 @@ async def sold(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/cancel — отменить последнюю продажу (удаляет последнюю строку из таблицы)"""
-    try:
-        sheet = get_sales_sheet()
-        rows = sheet.get_all_values()
-    except Exception as e:
-        logging.error(f"Ошибка чтения таблицы: {e}")
-        await update.message.reply_text("⚠️ Не получилось прочитать таблицу.")
-        return
-
-    if len(rows) <= 1:
+    """/cancel — отменить самую последнюю по дате продажу (среди всех машин)"""
+    all_rows = get_all_sales_everywhere()
+    if not all_rows:
         await update.message.reply_text("Нет продаж для отмены.")
         return
 
-    last_row = rows[-1]
-    last_row_num = len(rows)  # номер строки в таблице (1-индексация, с заголовком)
+    def parse_dt(r):
+        try:
+            return datetime.strptime(r["date"], "%d.%m.%Y %H:%M")
+        except ValueError:
+            return datetime.min
+
+    last = max(all_rows, key=parse_dt)
+
+    ws = find_budget_vehicle_sheet(last["vehicle"])
+    if ws is None:
+        await update.message.reply_text("⚠️ Не получилось найти лист машины для отмены.")
+        return
 
     try:
-        sheet.delete_rows(last_row_num)
+        ws.delete_rows(last["row_num"])
     except Exception as e:
         logging.error(f"Ошибка удаления строки: {e}")
         await update.message.reply_text("⚠️ Не получилось удалить запись из таблицы.")
         return
 
-    date_s = last_row[0] if len(last_row) > 0 else "?"
-    vehicle = last_row[1] if len(last_row) > 1 else "?"
-    part = last_row[2] if len(last_row) > 2 else "?"
-    price = last_row[3] if len(last_row) > 3 else "?"
-    seller = last_row[4] if len(last_row) > 4 else "?"
-
     await update.message.reply_text(
         f"❌ Отменена продажа:\n"
-        f"• {part} ({vehicle}) — {price} ({seller})\n"
-        f"Дата: {date_s}"
+        f"• {last['part']} ({last['vehicle']}) — {last['price']:.2f} ({last['method']})\n"
+        f"Продал: {last['seller']}\n"
+        f"Дата: {last['date']}"
     )
 
 
 # ===== КОМАНДЫ: СТАТИСТИКА ПРОДАЖ =====
 
 async def today(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/today — продажи за сегодня"""
-    try:
-        sheet = get_sales_sheet()
-        rows = sheet.get_all_values()[1:]
-    except Exception as e:
-        logging.error(f"Ошибка чтения таблицы: {e}")
-        await update.message.reply_text("⚠️ Не получилось прочитать таблицу.")
-        return
-
-    today_str = date.today().strftime("%d.%m.%Y")
-    today_rows = [r for r in rows if r and r[0].startswith(today_str)]
+    """/today — продажи за сегодня (по всем машинам)"""
+    all_rows = get_all_sales_everywhere()
+    today_str = today_local().strftime("%d.%m.%Y")
+    today_rows = [r for r in all_rows if r["date"].startswith(today_str)]
 
     if not today_rows:
         await update.message.reply_text("Сегодня пока ничего не продано.")
         return
 
-    total_sum = 0.0
+    total_sum = sum(r["price"] for r in today_rows)
     lines = [f"📅 Продажи за сегодня ({len(today_rows)} шт.):\n"]
     for r in today_rows:
-        try:
-            price = float(r[3])
-        except (IndexError, ValueError):
-            price = 0.0
-        total_sum += price
-        vehicle = r[1] if len(r) > 1 else "?"
-        part = r[2] if len(r) > 2 else "?"
-        seller = r[4] if len(r) > 4 else "?"
-        lines.append(f"• {part} ({vehicle}) — {price:.2f} ({seller})")
+        lines.append(f"• {r['part']} ({r['vehicle']}) — {r['price']:.2f} ({r['seller']})")
 
     lines.append(f"\n💰 Итого за сегодня: {total_sum:.2f}")
     await update.message.reply_text("\n".join(lines))
 
 
 async def month(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/month — продажи за текущий месяц"""
-    try:
-        sheet = get_sales_sheet()
-        rows = sheet.get_all_values()[1:]
-    except Exception as e:
-        logging.error(f"Ошибка чтения таблицы: {e}")
-        await update.message.reply_text("⚠️ Не получилось прочитать таблицу.")
-        return
+    """/month — продажи за текущий месяц (по всем машинам)"""
+    all_rows = get_all_sales_everywhere()
+    now = now_local()
+    month_str = now.strftime(".%m.%Y")
 
-    now = datetime.now()
-    month_str = now.strftime(".%m.%Y")  # например ".06.2026"
-
-    month_rows = []
-    for r in rows:
-        if not r or not r[0]:
-            continue
-        # Формат даты: ДД.ММ.ГГГГ ЧЧ:ММ
-        if month_str in r[0][:10]:
-            month_rows.append(r)
+    month_rows = [r for r in all_rows if r["date"] and month_str in r["date"][:10]]
 
     if not month_rows:
         await update.message.reply_text("В этом месяце пока нет продаж.")
         return
 
-    total_sum = 0.0
-    for r in month_rows:
-        try:
-            total_sum += float(r[3])
-        except (IndexError, ValueError):
-            continue
-
+    total_sum = sum(r["price"] for r in month_rows)
     month_name = now.strftime("%m.%Y")
     await update.message.reply_text(
         f"📅 Продажи за месяц ({month_name}):\n"
@@ -346,51 +370,40 @@ async def month(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def list_sales(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/list — последние 10 продаж"""
-    try:
-        sheet = get_sales_sheet()
-        rows = sheet.get_all_values()[1:]
-    except Exception as e:
-        logging.error(f"Ошибка чтения таблицы: {e}")
-        await update.message.reply_text("⚠️ Не получилось прочитать таблицу.")
-        return
-
-    if not rows:
+    """/list — последние 10 продаж (по всем машинам)"""
+    all_rows = get_all_sales_everywhere()
+    if not all_rows:
         await update.message.reply_text("Пока нет ни одной продажи.")
         return
 
-    last_rows = rows[-10:]
+    def parse_dt(r):
+        try:
+            return datetime.strptime(r["date"], "%d.%m.%Y %H:%M")
+        except ValueError:
+            return datetime.min
+
+    sorted_rows = sorted(all_rows, key=parse_dt)
+    last_rows = sorted_rows[-10:]
+
     lines = ["📋 Последние продажи:\n"]
     for r in last_rows:
-        date_s = r[0] if len(r) > 0 else "?"
-        vehicle = r[1] if len(r) > 1 else "?"
-        part = r[2] if len(r) > 2 else "?"
-        price = r[3] if len(r) > 3 else "?"
-        seller = r[4] if len(r) > 4 else "?"
-        lines.append(f"• {date_s} — {part} ({vehicle}) — {price} ({seller})")
+        lines.append(f"• {r['date']} — {r['part']} ({r['vehicle']}) — {r['price']:.2f} ({r['seller']})")
 
     await update.message.reply_text("\n".join(lines))
 
 
 async def find(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/find Название — поиск по детали"""
+    """/find Название — поиск по детали или машине (по всем машинам)"""
     if not context.args:
         await update.message.reply_text("Используй так:\n/find Название_детали\n\nПример:\n/find бампер")
         return
 
     query = " ".join(context.args).lower()
-
-    try:
-        sheet = get_sales_sheet()
-        rows = sheet.get_all_values()[1:]
-    except Exception as e:
-        logging.error(f"Ошибка чтения таблицы: {e}")
-        await update.message.reply_text("⚠️ Не получилось прочитать таблицу.")
-        return
+    all_rows = get_all_sales_everywhere()
 
     matches = [
-        r for r in rows
-        if (len(r) > 2 and (query in r[2].lower() or query in r[1].lower()))
+        r for r in all_rows
+        if query in r["part"].lower() or query in r["vehicle"].lower()
     ]
 
     if not matches:
@@ -399,43 +412,26 @@ async def find(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     lines = [f"🔍 Найдено ({len(matches)}):\n"]
     for r in matches[-15:]:
-        date_s = r[0] if len(r) > 0 else "?"
-        vehicle = r[1] if len(r) > 1 else "?"
-        part = r[2] if len(r) > 2 else "?"
-        price = r[3] if len(r) > 3 else "?"
-        seller = r[4] if len(r) > 4 else "?"
-        lines.append(f"• {date_s} — {part} ({vehicle}) — {price} ({seller})")
+        lines.append(f"• {r['date']} — {r['part']} ({r['vehicle']}) — {r['price']:.2f} ({r['seller']})")
 
     await update.message.reply_text("\n".join(lines))
 
 
 async def byseller(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/byseller — статистика по каждому продавцу"""
-    try:
-        sheet = get_sales_sheet()
-        rows = sheet.get_all_values()[1:]
-    except Exception as e:
-        logging.error(f"Ошибка чтения таблицы: {e}")
-        await update.message.reply_text("⚠️ Не получилось прочитать таблицу.")
-        return
-
-    if not rows:
+    """/byseller — статистика по каждому продавцу (по всем машинам)"""
+    all_rows = get_all_sales_everywhere()
+    if not all_rows:
         await update.message.reply_text("Пока нет ни одной продажи.")
         return
 
     stats = {}
-    for r in rows:
-        seller = r[4] if len(r) > 4 else "?"
-        try:
-            price = float(r[3])
-        except (IndexError, ValueError):
-            price = 0.0
+    for r in all_rows:
+        seller = r["seller"] or "?"
         if seller not in stats:
             stats[seller] = {"count": 0, "sum": 0.0}
         stats[seller]["count"] += 1
-        stats[seller]["sum"] += price
+        stats[seller]["sum"] += r["price"]
 
-    # Сортируем по сумме продаж, по убыванию
     sorted_sellers = sorted(stats.items(), key=lambda x: x[1]["sum"], reverse=True)
 
     lines = ["👤 Статистика по продавцам:\n"]
@@ -448,91 +444,36 @@ async def byseller(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ===== КОМАНДЫ: ПО МАШИНАМ =====
 
 async def vehiclestats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /vehiclestats Машина — статистика по конкретной машине
-    Пример: /vehiclestats GL450
-    """
+    """/vehiclestats Машина — статистика по конкретной машине"""
     if not context.args:
         await update.message.reply_text("Используй так:\n/vehiclestats Машина\n\nПример:\n/vehiclestats GL450")
         return
 
-    query = " ".join(context.args).lower()
+    query = " ".join(context.args)
+    ws = find_budget_vehicle_sheet(query)
 
-    try:
-        sheet = get_sales_sheet()
-        rows = sheet.get_all_values()[1:]
-    except Exception as e:
-        logging.error(f"Ошибка чтения таблицы: {e}")
-        await update.message.reply_text("⚠️ Не получилось прочитать таблицу.")
+    if ws is None:
+        await update.message.reply_text(f"Не нашёл машину: {query}")
         return
 
-    matches = [r for r in rows if len(r) > 1 and query in r[1].lower()]
+    summary = get_vehicle_summary(ws)
+    details = get_all_detail_rows(ws)
 
-    total_sum = 0.0
-    for r in matches:
-        try:
-            total_sum += float(r[3])
-        except (IndexError, ValueError):
-            continue
+    lines = [f"🚗 Статистика по машине: {ws.title}\n", f"Деталей продано: {len(details)}\n"]
+    for r in details[-15:]:
+        lines.append(f"• {r['date']} — {r['part']} — {r['price']:.2f} ({r['method']})")
 
-    # Расходы из таблицы "Разбор бюджет" (цена покупки + прочие расходы)
-    budget_purchase, budget_other, budget_sold = get_budget_vehicle_costs(query)
-    budget_expenses = budget_purchase + budget_other
+    lines.append(f"\n💰 Продано (cash): {summary['cash']:.2f}")
+    lines.append(f"💰 Продано (ebay): {summary['ebay']:.2f}")
+    lines.append(f"💰 Общая выручка: {summary['sold']:.2f}")
+    lines.append(f"🚙 Цена покупки: {summary['purchase']:.2f}")
+    lines.append(f"🔧 Прочие расходы: {summary['other_exp']:.2f}")
 
-    # Дополнительные расходы, записанные через /expense в боте
-    bot_expenses = 0.0
-    try:
-        exp_sheet = get_expenses_sheet()
-        exp_rows = exp_sheet.get_all_values()[1:]
-        for r in exp_rows:
-            if len(r) > 1 and query in r[1].lower():
-                try:
-                    bot_expenses += float(r[2])
-                except (IndexError, ValueError):
-                    continue
-    except Exception as e:
-        logging.error(f"Ошибка чтения Expenses для vehiclestats: {e}")
-
-    vehicle_expenses = budget_expenses + bot_expenses
-
-    if not matches and not budget_purchase and not budget_other and not bot_expenses:
-        await update.message.reply_text(f"Нет записей по машине: {query}")
-        return
-
-    # Для расчёта прибыли используем выручку бота, либо данные из таблицы "Разбор бюджет",
-    # если в боте пока нет записей по этой машине
-    revenue = total_sum + budget_sold
-    net_profit = revenue - vehicle_expenses
-
-    lines = [f"🚗 Статистика по машине: {query}\n", f"Деталей продано (бот): {len(matches)}\n"]
-    for r in matches[-15:]:
-        date_s = r[0] if len(r) > 0 else "?"
-        part = r[2] if len(r) > 2 else "?"
-        price = r[3] if len(r) > 3 else "?"
-        lines.append(f"• {date_s} — {part} — {price}")
-
-    lines.append(f"\n💰 Общая выручка (бот): {total_sum:.2f}")
-    if budget_sold:
-        lines.append(f"📋 Продано по таблице (Разбор бюджет): {budget_sold:.2f}")
-    if budget_purchase or budget_other:
-        lines.append(f"🚙 Цена покупки: {budget_purchase:.2f}")
-        lines.append(f"🔧 Прочие расходы: {budget_other:.2f}")
-    if bot_expenses:
-        lines.append(f"💸 Доп. расходы (/expense): {bot_expenses:.2f}")
-    lines.append(f"💸 Всего расходов: {vehicle_expenses:.2f}")
-    lines.append(f"📊 Чистая прибыль: {net_profit:.2f}")
-
-    if vehicle_expenses > 0:
-        roi = (net_profit / vehicle_expenses) * 100
-        lines.append(f"📈 ROI: {roi:.1f}%")
-    else:
-        lines.append("📈 ROI: — (расходы не записаны)")
-
-    if revenue > 0:
-        margin = (net_profit / revenue) * 100
-        lines.append(f"📐 Маржа прибыли: {margin:.1f}%")
-    else:
-        lines.append("📐 Маржа прибыли: —")
+    total_expenses = summary['purchase'] + summary['other_exp']
+    lines.append(f"💸 Всего расходов: {total_expenses:.2f}")
+    lines.append(f"📊 Чистая прибыль: {summary['profit']:.2f}")
+    lines.append(f"📈 ROI: {summary['roi']:.1f}%")
+    lines.append(f"📐 Маржа прибыли: {summary['margin']:.1f}%")
 
     await update.message.reply_text("\n".join(lines))
 
@@ -544,20 +485,14 @@ def create_new_car_sheet(car_name, purchase_price):
     - переименовывает дубликат в car_name
     - очищает строки с деталями (5+)
     - устанавливает заголовок A1 и D4 (цена покупки)
-    Структура листа: строка 1=название, строка 2=заголовки,
-    строка 3=cash/ebay подзаголовки, строка 4=итоги, строка 5+=детали.
-    Возвращает (True, "") при успехе, или (False, "сообщение об ошибке").
     """
     try:
-        client = get_client()
-        spreadsheet = client.open_by_key(BUDGET_SPREADSHEET_ID)
+        spreadsheet = get_budget_spreadsheet()
 
-        # Проверяем, нет ли уже листа с таким названием
         for ws in spreadsheet.worksheets():
             if ws.title.strip().lower() == car_name.strip().lower():
                 return False, f"Лист '{car_name}' уже существует."
 
-        # Берём первый лист-машину как шаблон (не 'Бюджет')
         template = None
         for ws in spreadsheet.worksheets():
             if ws.title.strip().lower() != "бюджет":
@@ -569,18 +504,14 @@ def create_new_car_sheet(car_name, purchase_price):
 
         new_ws = template.duplicate(new_sheet_name=car_name)
 
-        # Очищаем строки с деталями (начиная с 5-й), оставляя строки 1-4 (шапка + итог)
         max_row = new_ws.row_count
         if max_row > 4:
-            new_ws.batch_clear([f"A5:I{max_row}"])
+            new_ws.batch_clear([f"A5:K{max_row}"])
 
-        # Устанавливаем заголовок и цену покупки
         new_ws.update_acell("A1", car_name)
         new_ws.update_acell("D4", purchase_price)
-        # B4/C4 — формулы суммы cash/ebay (после очистки строк 5+ дадут 0 автоматически)
         new_ws.update_acell("B4", "=СУММ(B5:B999)")
         new_ws.update_acell("C4", "=СУММ(C5:C999)")
-        # Обнуляем "Прочие расходы" для новой машины
         new_ws.update_acell("E4", 0)
 
         return True, ""
@@ -590,18 +521,12 @@ def create_new_car_sheet(car_name, purchase_price):
 
 
 async def newcar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /newcar Название_машины Цена_покупки
-    Создаёт новый лист в 'Разбор бюджет' для новой машины (со всеми формулами),
-    указывая цену покупки. Прочие расходы и продажи добавляются позже через
-    /expense и /sold.
-    """
+    """/newcar Название_машины Цена_покупки"""
     if len(context.args) < 2:
         await update.message.reply_text(
             "Используй так:\n/newcar Название_машины Цена_покупки\n\n"
             "Пример:\n/newcar BMW_x5_black 8000\n\n"
-            "Последнее слово — цена покупки (число), остальное — название машины "
-            "(оно станет названием листа в 'Разбор бюджет')."
+            "Последнее слово — цена покупки (число), остальное — название машины."
         )
         return
 
@@ -612,7 +537,6 @@ async def newcar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     car_name = " ".join(context.args[:-1])
-
     success, error = create_new_car_sheet(car_name, purchase_price)
 
     if not success:
@@ -623,46 +547,56 @@ async def newcar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🚗 Создана новая машина: {car_name}\n"
         f"Цена покупки: {purchase_price:.2f}\n\n"
         f"Теперь можешь использовать:\n"
-        f"/sold\n{car_name}\nДеталь\nЦена\n\n"
+        f"/sold\n{car_name}\nДеталь\nЦена\ncash (или ebay)\n\n"
         f"/expense {car_name}_расход Сумма — для прочих расходов\n"
         f"/vehiclestats {car_name} — статистика"
     )
 
 
+# ===== КОМАНДЫ: РАСХОДЫ =====
+
 async def expense(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/expense Название Сумма — записать расход"""
+    """
+    /expense Машина Сумма — добавить к 'Прочим расходам' указанной машины
+    Пример: /expense GL450 150
+    """
     if len(context.args) < 2:
         await update.message.reply_text(
-            "Используй так:\n/expense Название Сумма\n\nПример:\n/expense Покупка_авто_GL450 15000"
+            "Используй так:\n/expense Машина Сумма\n\nПример:\n/expense GL450 150\n\n"
+            "Сумма добавится к 'Прочим расходам' этой машины."
         )
         return
 
     try:
         amount = float(context.args[-1])
     except ValueError:
-        await update.message.reply_text("Последним должна быть сумма (число). Пример: /expense Доставка 200")
+        await update.message.reply_text("Последним должна быть сумма (число). Пример: /expense GL450 150")
         return
 
-    expense_name = " ".join(context.args[:-1])
-    added_by = update.message.from_user.first_name
-    now = datetime.now().strftime("%d.%m.%Y %H:%M")
+    vehicle_query = " ".join(context.args[:-1])
+    ws = find_budget_vehicle_sheet(vehicle_query)
+
+    if ws is None:
+        await update.message.reply_text(f"⚠️ Не нашёл машину: {vehicle_query}")
+        return
 
     try:
-        sheet = get_expenses_sheet()
-        sheet.append_row([now, expense_name, amount, added_by])
+        current_val = cell_to_float(ws.acell("E4").value)
+        new_val = current_val + amount
+        ws.update_acell("E4", new_val)
     except Exception as e:
-        logging.error(f"Ошибка записи в Expenses: {e}")
+        logging.error(f"Ошибка записи расхода: {e}")
         await update.message.reply_text("⚠️ Не получилось записать расход в таблицу.")
         return
 
+    added_by = update.message.from_user.first_name
     await update.message.reply_text(
-        f"💸 Записан расход:\n"
-        f"{expense_name}: {amount:.2f}\n"
-        f"Добавил: {added_by}\n"
-        f"Дата: {now}"
+        f"💸 Добавлен расход:\n"
+        f"Машина: {ws.title}\n"
+        f"Сумма: {amount:.2f}\n"
+        f"Прочие расходы теперь: {new_val:.2f}\n"
+        f"Добавил: {added_by}"
     )
-
-
 
 
 # ===== ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ =====
@@ -675,40 +609,29 @@ async def weekly_report(context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        sheet = get_sales_sheet()
-        rows = sheet.get_all_values()[1:]
+        all_rows = get_all_sales_everywhere()
     except Exception as e:
-        logging.error(f"Ошибка чтения таблицы для отчёта: {e}")
+        logging.error(f"Ошибка чтения данных для отчёта: {e}")
         return
 
-    from datetime import timedelta
-    week_ago = datetime.now() - timedelta(days=7)
+    week_ago = now_local().replace(tzinfo=None) - timedelta(days=7)
 
-    week_rows = []
-    for r in rows:
-        if not r or not r[0]:
-            continue
+    def parse_dt(r):
         try:
-            row_date = datetime.strptime(r[0], "%d.%m.%Y %H:%M")
+            return datetime.strptime(r["date"], "%d.%m.%Y %H:%M")
         except ValueError:
-            continue
-        if row_date >= week_ago:
-            week_rows.append(r)
+            return None
+
+    week_rows = [r for r in all_rows if parse_dt(r) and parse_dt(r) >= week_ago]
 
     if not week_rows:
         text = "📅 Еженедельный отчёт:\n\nЗа последние 7 дней продаж не было."
     else:
-        total_sum = 0.0
+        total_sum = sum(r["price"] for r in week_rows)
         stats = {}
         for r in week_rows:
-            try:
-                price = float(r[3])
-            except (IndexError, ValueError):
-                price = 0.0
-            total_sum += price
-            seller = r[4] if len(r) > 4 else "?"
-            stats[seller] = stats.get(seller, 0.0) + price
-
+            seller = r["seller"] or "?"
+            stats[seller] = stats.get(seller, 0.0) + r["price"]
         top_seller = max(stats.items(), key=lambda x: x[1])
 
         text = (
@@ -724,78 +647,41 @@ async def weekly_report(context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"Не удалось отправить еженедельный отчёт: {e}")
 
 
-# ===== СВОДКА ПО "РАЗБОР БЮДЖЕТ" =====
-
-# ===== ОБЩАЯ ПРИБЫЛЬ (БОТ + РАЗБОР БЮДЖЕТ) =====
+# ===== ОБЩАЯ ПРИБЫЛЬ (ВСЕ МАШИНЫ ИЗ "РАЗБОР БЮДЖЕТ") =====
 
 async def totalprofit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/totalprofit — общая прибыль: данные бота (продажи и расходы) + все машины из 'Разбор бюджет'"""
-
-    # ----- Данные из бота -----
-    try:
-        sales_sheet = get_sales_sheet()
-        sales_rows = sales_sheet.get_all_values()[1:]
-    except Exception as e:
-        logging.error(f"Ошибка чтения продаж: {e}")
-        sales_rows = []
-
-    try:
-        expenses_sheet = get_expenses_sheet()
-        expense_rows = expenses_sheet.get_all_values()[1:]
-    except Exception as e:
-        logging.error(f"Ошибка чтения расходов: {e}")
-        expense_rows = []
-
-    bot_sales = 0.0
-    for r in sales_rows:
-        try:
-            bot_sales += float(r[3])
-        except (IndexError, ValueError):
-            continue
-
-    bot_expenses = 0.0
-    for r in expense_rows:
-        try:
-            bot_expenses += float(r[2])
-        except (IndexError, ValueError):
-            continue
-
-    # ----- Данные из "Разбор бюджет" -----
+    """/totalprofit — общая прибыль по всем машинам из 'Разбор бюджет'"""
     stats = get_all_budget_vehicle_stats()
 
     lines = ["📊 Общая статистика:\n"]
 
-    budget_sold = 0.0
-    budget_expenses = 0.0
-    budget_profit = 0.0
+    total_sold = 0.0
+    total_expenses = 0.0
+    total_profit = 0.0
+    total_count = 0
 
     if stats:
-        lines.append("По машинам (Разбор бюджет):")
+        lines.append("По машинам:")
         for s in stats:
             lines.append(
                 f"🚗 {s['title']}\n"
                 f"   Продано: {s['sold']:.2f} | Прибыль: {s['profit']:.2f} | "
                 f"ROI: {s['roi']:.1f}% | Маржа: {s['margin']:.1f}%"
             )
-            budget_sold += s["sold"]
-            budget_expenses += s["purchase"] + s["other_exp"]
-            budget_profit += s["profit"]
+            total_sold += s["sold"]
+            total_expenses += s["purchase"] + s["other_exp"]
+            total_profit += s["profit"]
         lines.append("")
     else:
         lines.append("⚠️ Не получилось прочитать 'Разбор бюджет'.\n")
 
-    # ----- Итоги -----
-    total_sales = bot_sales + budget_sold
-    total_expenses = bot_expenses + budget_expenses
-    total_profit = total_sales - total_expenses
+    try:
+        total_count = len(get_all_sales_everywhere())
+    except Exception:
+        pass
 
-    lines.append(f"🔢 Количество продаж (бот): {len(sales_rows)}")
-    lines.append(f"💰 Продажи через бота: {bot_sales:.2f}")
-    lines.append(f"💸 Расходы через бота: {bot_expenses:.2f}")
-    lines.append(f"💰 Продано по 'Разбор бюджет': {budget_sold:.2f}")
-    lines.append(f"💸 Расходы по 'Разбор бюджет': {budget_expenses:.2f}")
-    lines.append("")
-    lines.append(f"💰 Всего продаж: {total_sales:.2f}")
+    lines.append(f"🔢 Количество продаж: {total_count}")
+    lines.append(f"💰 Всего продаж: {total_sold:.2f}")
     lines.append(f"💸 Всего расходов: {total_expenses:.2f}")
     lines.append(f"📊 Общая чистая прибыль: {total_profit:.2f}")
 
@@ -805,8 +691,8 @@ async def totalprofit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         lines.append("📈 Общий ROI: — (расходы не записаны)")
 
-    if total_sales > 0:
-        overall_margin = (total_profit / total_sales) * 100
+    if total_sold > 0:
+        overall_margin = (total_profit / total_sold) * 100
         lines.append(f"📐 Общая маржа: {overall_margin:.1f}%")
     else:
         lines.append("📐 Общая маржа: —")
@@ -817,7 +703,7 @@ async def totalprofit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ===== СЛУЖЕБНОЕ =====
 
 async def groupid(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/groupid — показывает ID текущего чата (для настройки REPORT_CHAT_ID)"""
+    """/groupid — показывает ID текущего чата"""
     chat_id = update.effective_chat.id
     await update.message.reply_text(f"ID этого чата: {chat_id}")
 
@@ -828,11 +714,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 Команды бота:\n\n"
         "Продажи:\n"
-        "/sold (каждая часть с новой строки: Машина / Деталь / Цена) — отметить продажу\n"
+        "/sold (Машина / Деталь / Цена / cash или ebay) — отметить продажу\n"
         "/cancel — отменить последнюю продажу\n\n"
         "Финансы:\n"
-        "/expense Название Сумма — записать расход\n"
-        "/totalprofit — общая прибыль (бот + 'Разбор бюджет')\n\n"
+        "/expense Машина Сумма — добавить прочий расход к машине\n"
+        "/totalprofit — общая прибыль по всем машинам\n\n"
         "Статистика:\n"
         "/today — продажи за сегодня\n"
         "/month — продажи за текущий месяц\n"
@@ -889,7 +775,7 @@ def main():
         app.job_queue.run_daily(
             weekly_report,
             time=dtime(hour=9, minute=0),
-            days=(0,),  # 0 = понедельник
+            days=(0,),
         )
 
     app.run_polling()
