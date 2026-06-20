@@ -103,8 +103,8 @@ def get_all_budget_vehicle_stats():
                 continue
 
             try:
-                row3 = ws.get_values("A3:H3")
-                row3 = row3[0] if row3 else []
+                all_values = ws.get_all_values()
+                row3 = all_values[2] if len(all_values) > 2 else []
 
                 def cell_to_float(idx):
                     try:
@@ -120,6 +120,8 @@ def get_all_budget_vehicle_stats():
                 profit = cell_to_float(5)    # F
                 roi = cell_to_float(6)       # G
                 margin = cell_to_float(7)    # H
+
+                logging.info(f"[{title}] row3={row3}")
 
                 results.append({
                     "title": title,
